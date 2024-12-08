@@ -11,23 +11,31 @@
 
 use shakmaty::{uci::UciMove, Chess, Position};
 
-use pgn_reader::{BufferedReader, SanPlus, Skip, Visitor};
+use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use std::io::Cursor;
 
+#[pyclass]
 /// A Visitor to extract SAN moves from PGN movetext
 struct MoveExtractor {
+    #[pyo3(get, set)]
     moves: Vec<String>,
     pos: Chess,
+    #[pyo3(get, set)]
     valid_moves: bool,
+    #[pyo3(get, set)]
+    comments: Vec<String>,
 }
 
+#[pymethods]
 impl MoveExtractor {
+    #[new]
     fn new() -> MoveExtractor {
         MoveExtractor {
             moves: Vec::new(),
             pos: Chess::default(),
             valid_moves: true,
+            comments: Vec::new(),
         }
     }
 }
@@ -57,6 +65,11 @@ impl Visitor for MoveExtractor {
         }
     }
 
+    fn comment(&mut self, _comment: RawComment<'_>) {
+        self.comments
+            .push(String::from_utf8_lossy(_comment.as_bytes()).into_owned());
+    }
+
     fn begin_variation(&mut self) -> Skip {
         Skip(true) // stay in the mainline
     }
@@ -68,12 +81,12 @@ impl Visitor for MoveExtractor {
 
 /// Parses PGN movetext and returns a list of SAN moves
 #[pyfunction]
-fn parse_moves(pgn: &str) -> PyResult<Vec<String>> {
+fn parse_moves(pgn: &str) -> PyResult<MoveExtractor> {
     let mut reader = BufferedReader::new(Cursor::new(pgn));
     let mut extractor = MoveExtractor::new();
 
     match reader.read_game(&mut extractor) {
-        Ok(Some(moves)) => Ok(moves),
+        Ok(Some(_)) => Ok(extractor),
         Ok(None) => Err(pyo3::exceptions::PyValueError::new_err(
             "No game found in PGN",
         )),

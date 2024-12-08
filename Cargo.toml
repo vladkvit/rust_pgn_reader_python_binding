@@ -9,6 +9,6 @@ name = "my_own_parser"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.23.1"
+pyo3 = "0.23.3"
 shakmaty = "0.27"
 pgn-reader = "0.26.0"
