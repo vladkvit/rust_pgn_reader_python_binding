@@ -9,7 +9,7 @@
 //     },
 // };
 
-// use shakmaty::{fen::Fen, CastlingMode, Chess, Position};
+use shakmaty::{uci::UciMove, Chess, Move, Square};
 
 use pgn_reader::{BufferedReader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
@@ -18,11 +18,17 @@ use std::io::Cursor;
 /// A Visitor to extract SAN moves from PGN movetext
 struct MoveExtractor {
     moves: Vec<String>,
+    pos: Chess,
+    valid_moves: bool,
 }
 
 impl MoveExtractor {
     fn new() -> MoveExtractor {
-        MoveExtractor { moves: Vec::new() }
+        MoveExtractor {
+            moves: Vec::new(),
+            pos: Chess::default(),
+            valid_moves: true,
+        }
     }
 }
 
@@ -31,6 +37,8 @@ impl Visitor for MoveExtractor {
 
     fn begin_game(&mut self) {
         self.moves.clear();
+        self.pos = Chess::default();
+        self.valid_moves = true;
     }
 
     fn san(&mut self, san_plus: SanPlus) {
