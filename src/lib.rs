@@ -9,7 +9,7 @@
 //     },
 // };
 
-use shakmaty::{uci::UciMove, Chess, Move, Square};
+use shakmaty::{uci::UciMove, Chess, Position};
 
 use pgn_reader::{BufferedReader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
@@ -42,7 +42,19 @@ impl Visitor for MoveExtractor {
     }
 
     fn san(&mut self, san_plus: SanPlus) {
-        self.moves.push(san_plus.san.to_string());
+        if self.valid_moves {
+            match san_plus.san.to_move(&self.pos) {
+                Ok(m) => {
+                    self.pos.play_unchecked(&m);
+                    let uci = UciMove::from_standard(&m);
+                    self.moves.push(uci.to_string());
+                }
+                Err(err) => {
+                    eprintln!("error in game: {} {}", err, san_plus);
+                    self.valid_moves = false;
+                }
+            }
+        }
     }
 
     fn begin_variation(&mut self) -> Skip {
