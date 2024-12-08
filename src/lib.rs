@@ -18,13 +18,16 @@ use std::io::Cursor;
 #[pyclass]
 /// A Visitor to extract SAN moves from PGN movetext
 struct MoveExtractor {
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     moves: Vec<String>,
-    pos: Chess,
-    #[pyo3(get, set)]
+
+    #[pyo3(get)]
     valid_moves: bool,
-    #[pyo3(get, set)]
+
+    #[pyo3(get)]
     comments: Vec<String>,
+
+    pos: Chess,
 }
 
 #[pymethods]
