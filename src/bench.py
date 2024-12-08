@@ -21,13 +21,7 @@ file_path = "lichess_db_standard_rated_2013-07.pgn"
 
 a = datetime.now()
 for game_pgn in split_pgn(file_path):
-    # print("Game:")
-    # print(game_pgn)
     extractor = my_own_parser.parse_moves(game_pgn)
-
-    # print(extractor.moves)
-    # print(extractor.comments)
-    # print(extractor.valid_moves)
 
 b = datetime.now()
 print(b - a)
