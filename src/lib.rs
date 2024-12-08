@@ -1,14 +1,3 @@
-// use std::time::Instant;
-// use std::{
-//     env,
-//     fs::File,
-//     io, mem,
-//     sync::{
-//         atomic::{AtomicBool, Ordering},
-//         Arc,
-//     },
-// };
-
 use shakmaty::{uci::UciMove, Chess, Position};
 
 use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
