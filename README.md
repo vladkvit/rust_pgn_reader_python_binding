@@ -16,3 +16,5 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games).
 ## Building
 `maturin develop`
 `maturin develop --release`
+
+For a more thorough tutorial, follow https://lukesalamone.github.io/posts/how-to-create-rust-python-bindings/
