@@ -1,4 +1,4 @@
-import my_own_parser
+import rust_pgn_reader_python_binding
 from fastparquet import ParquetFile
 
 from datetime import datetime
@@ -13,7 +13,7 @@ pf = ParquetFile(file_path)
 
 for df in pf.iter_row_groups():
     for row in df.movetext:
-        extractor = my_own_parser.parse_moves(row)
+        extractor = rust_pgn_reader_python_binding.parse_moves(row)
 
 b = datetime.now()
 print(b - a)

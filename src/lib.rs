@@ -91,7 +91,7 @@ fn parse_moves(pgn: &str) -> PyResult<MoveExtractor> {
 
 /// A Python module implemented in Rust.
 #[pymodule]
-fn my_own_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_moves, m)?)?;
     Ok(())
 }

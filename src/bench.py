@@ -1,4 +1,4 @@
-import my_own_parser
+import rust_pgn_reader_python_binding
 
 from datetime import datetime
 
@@ -21,7 +21,7 @@ file_path = "lichess_db_standard_rated_2013-07.pgn"
 
 a = datetime.now()
 for game_pgn in split_pgn(file_path):
-    extractor = my_own_parser.parse_moves(game_pgn)
+    extractor = rust_pgn_reader_python_binding.parse_moves(game_pgn)
 
 b = datetime.now()
 print(b - a)
