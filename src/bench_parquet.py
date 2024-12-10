@@ -14,6 +14,8 @@ pf = ParquetFile(file_path)
 for df in pf.iter_row_groups():
     for row in df.movetext:
         extractor = rust_pgn_reader_python_binding.parse_moves(row)
+        moves = extractor.moves
+        comments = extractor.comments
 
 b = datetime.now()
 print(b - a)
