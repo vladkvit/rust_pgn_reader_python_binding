@@ -24,21 +24,22 @@ impl MoveExtractor {
     #[new]
     fn new() -> MoveExtractor {
         MoveExtractor {
-            moves: Vec::new(),
+            moves: Vec::with_capacity(100),
             pos: Chess::default(),
             valid_moves: true,
-            comments: Vec::new(),
+            comments: Vec::with_capacity(100),
         }
     }
 }
 
 impl Visitor for MoveExtractor {
-    type Result = Vec<String>;
+    type Result = bool;
 
     fn begin_game(&mut self) {
         self.moves.clear();
         self.pos = Chess::default();
         self.valid_moves = true;
+        self.comments.clear();
     }
 
     fn san(&mut self, san_plus: SanPlus) {
@@ -67,7 +68,7 @@ impl Visitor for MoveExtractor {
     }
 
     fn end_game(&mut self) -> Self::Result {
-        self.moves.clone()
+        self.valid_moves
     }
 }
 
