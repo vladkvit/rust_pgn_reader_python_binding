@@ -2,8 +2,6 @@ use shakmaty::{uci::UciMove, Chess, Position};
 
 use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
-use regex::Regex;
-
 use std::io::Cursor;
 
 #[pyclass]
@@ -74,22 +72,36 @@ impl Visitor for MoveExtractor {
         let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
         self.comments.push(comment.clone());
 
-        // Extract [%eval NUMBER] and [%clk TIME] patterns
-        let eval_re = Regex::new(r"\[%eval (-?\d+\.\d+)\]").unwrap();
-        let clk_re = Regex::new(r"\[%clk (\d+:\d+:\d+)\]").unwrap();
-
-        if let Some(captures) = eval_re.captures(&comment) {
-            if let Some(eval) = captures.get(1) {
-                if let Ok(eval_value) = eval.as_str().parse::<f64>() {
-                    self.evals.push(eval_value);
+        // Helper functions for parsing
+        fn extract_eval(comment: &str) -> Option<f64> {
+            if let Some(start) = comment.find("[%eval ") {
+                let start = start + 7; // Skip "[%eval "
+                if let Some(end) = comment[start..].find(']') {
+                    let eval_str = &comment[start..start + end];
+                    return eval_str.parse::<f64>().ok();
                 }
             }
+            None
         }
 
-        if let Some(captures) = clk_re.captures(&comment) {
-            if let Some(clk) = captures.get(1) {
-                self.clock_times.push(clk.as_str().to_string());
+        fn extract_clk(comment: &str) -> Option<String> {
+            if let Some(start) = comment.find("[%clk ") {
+                let start = start + 6; // Skip "[%clk "
+                if let Some(end) = comment[start..].find(']') {
+                    return Some(comment[start..start + end].to_string());
+                }
             }
+            None
+        }
+
+        // Extract [%eval NUMBER] pattern
+        if let Some(eval_value) = extract_eval(&comment) {
+            self.evals.push(eval_value);
+        }
+
+        // Extract [%clk TIME] pattern
+        if let Some(clk_time) = extract_clk(&comment) {
+            self.clock_times.push(clk_time);
         }
     }
 

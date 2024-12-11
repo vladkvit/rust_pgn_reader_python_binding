@@ -12,4 +12,3 @@ crate-type = ["cdylib"]
 pyo3 = "0.23.3"
 shakmaty = "0.27"
 pgn-reader = "0.26.0"
-regex = "1.11.1"
