@@ -5,9 +5,10 @@ use pyo3::prelude::*;
 use std::io::Cursor;
 
 use nom::{
-    bytes::complete::{tag, take_until},
-    combinator::map_res,
-    sequence::delimited,
+    bytes::complete::{tag, take_until, take_while_m_n},
+    character::complete::digit1,
+    combinator::{map, map_res, opt, recognize},
+    sequence::{delimited, pair},
     IResult,
 };
 
@@ -78,15 +79,24 @@ impl Visitor for MoveExtractor {
     fn comment(&mut self, _comment: RawComment<'_>) {
         fn parse_eval(input: &str) -> IResult<&str, f64> {
             map_res(
-                delimited(tag("[%eval "), take_until("]"), tag("]")),
-                |num_str: &str| num_str.parse::<f64>(),
+                delimited(
+                    tag("[%eval "),                         // Exact tag
+                    recognize(pair(opt(tag("-")), digit1)), // Recognize an optional '-' followed by digits
+                    tag("]"),                               // Closing bracket
+                ),
+                str::parse::<f64>, // Convert the recognized string to an f64
             )(input)
         }
 
         fn parse_clk(input: &str) -> IResult<&str, String> {
-            map_res(
-                delimited(tag("[%clk "), take_until("]"), tag("]")),
-                |clk_str: &str| Ok::<String, nom::error::Error<&str>>(clk_str.to_string()),
+            // Parsing clock time strings in HH:MM:SS format
+            map(
+                delimited(
+                    tag("[%clk "),                                              // Exact tag
+                    take_while_m_n(8, 8, |c: char| c.is_digit(10) || c == ':'), // Match exactly 'HH:MM:SS'
+                    tag("]"),                                                   // Closing bracket
+                ),
+                String::from, // Convert the slice to a String
             )(input)
         }
 
