@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use std::io::Cursor;
 
 #[pyclass]
-/// A Visitor to extract SAN moves from PGN movetext
+/// A Visitor to extract SAN moves and comments from PGN movetext
 struct MoveExtractor {
     #[pyo3(get)]
     moves: Vec<String>,
@@ -15,6 +15,12 @@ struct MoveExtractor {
 
     #[pyo3(get)]
     comments: Vec<String>,
+
+    #[pyo3(get)]
+    evals: Vec<f64>,
+
+    #[pyo3(get)]
+    clock_times: Vec<String>,
 
     pos: Chess,
 }
@@ -28,6 +34,8 @@ impl MoveExtractor {
             pos: Chess::default(),
             valid_moves: true,
             comments: Vec::with_capacity(100),
+            evals: Vec::with_capacity(100),
+            clock_times: Vec::with_capacity(100),
         }
     }
 }
@@ -40,6 +48,8 @@ impl Visitor for MoveExtractor {
         self.pos = Chess::default();
         self.valid_moves = true;
         self.comments.clear();
+        self.evals.clear();
+        self.clock_times.clear();
     }
 
     fn san(&mut self, san_plus: SanPlus) {
@@ -59,8 +69,40 @@ impl Visitor for MoveExtractor {
     }
 
     fn comment(&mut self, _comment: RawComment<'_>) {
-        self.comments
-            .push(String::from_utf8_lossy(_comment.as_bytes()).into_owned());
+        let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
+        self.comments.push(comment.clone());
+
+        // Helper functions for parsing
+        fn extract_eval(comment: &str) -> Option<f64> {
+            if let Some(start) = comment.find("[%eval ") {
+                let start = start + 7; // Skip "[%eval "
+                if let Some(end) = comment[start..].find(']') {
+                    let eval_str = &comment[start..start + end];
+                    return eval_str.parse::<f64>().ok();
+                }
+            }
+            None
+        }
+
+        fn extract_clk(comment: &str) -> Option<String> {
+            if let Some(start) = comment.find("[%clk ") {
+                let start = start + 6; // Skip "[%clk "
+                if let Some(end) = comment[start..].find(']') {
+                    return Some(comment[start..start + end].to_string());
+                }
+            }
+            None
+        }
+
+        // Extract [%eval NUMBER] pattern
+        if let Some(eval_value) = extract_eval(&comment) {
+            self.evals.push(eval_value);
+        }
+
+        // Extract [%clk TIME] pattern
+        if let Some(clk_time) = extract_clk(&comment) {
+            self.clock_times.push(clk_time);
+        }
     }
 
     fn begin_variation(&mut self) -> Skip {
@@ -72,7 +114,7 @@ impl Visitor for MoveExtractor {
     }
 }
 
-/// Parses PGN movetext and returns a list of SAN moves
+/// Parses PGN movetext and returns a list of SAN moves and parsed comments
 #[pyfunction]
 fn parse_moves(pgn: &str) -> PyResult<MoveExtractor> {
     let mut reader = BufferedReader::new(Cursor::new(pgn));
