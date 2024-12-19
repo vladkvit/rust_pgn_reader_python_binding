@@ -4,13 +4,7 @@ use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use std::io::Cursor;
 
-use nom::{
-    bytes::complete::{tag, take_until, take_while_m_n},
-    character::complete::digit1,
-    combinator::{map, map_res, opt, recognize},
-    sequence::{delimited, pair},
-    IResult,
-};
+mod comment_parsing;
 
 #[pyclass]
 /// A Visitor to extract SAN moves and comments from PGN movetext
@@ -77,41 +71,21 @@ impl Visitor for MoveExtractor {
     }
 
     fn comment(&mut self, _comment: RawComment<'_>) {
-        fn parse_eval(input: &str) -> IResult<&str, f64> {
-            map_res(
-                delimited(
-                    tag("[%eval "),                         // Exact tag
-                    recognize(pair(opt(tag("-")), digit1)), // Recognize an optional '-' followed by digits
-                    tag("]"),                               // Closing bracket
-                ),
-                str::parse::<f64>, // Convert the recognized string to an f64
-            )(input)
-        }
-
-        fn parse_clk(input: &str) -> IResult<&str, String> {
-            // Parsing clock time strings in HH:MM:SS format
-            map(
-                delimited(
-                    tag("[%clk "),                                              // Exact tag
-                    take_while_m_n(8, 8, |c: char| c.is_digit(10) || c == ':'), // Match exactly 'HH:MM:SS'
-                    tag("]"),                                                   // Closing bracket
-                ),
-                String::from, // Convert the slice to a String
-            )(input)
-        }
-
         let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
-        self.comments.push(comment.clone());
 
-        // Attempt to parse [%eval NUMBER]
-        if let Ok((_, eval_value)) = parse_eval(&comment) {
-            self.evals.push(eval_value);
+        match comment_parsing::comments(&comment) {
+            Ok((remaining_input, parsed_comments)) => {
+                println!("Remaining input: {}", remaining_input);
+                println!("Parsed comments: {:?}", parsed_comments);
+            }
+            Err(e) => {
+                eprintln!("Error parsing comment: {:?}", e);
+            }
         }
 
-        // Attempt to parse [%clk TIME]
-        if let Ok((_, clk_time)) = parse_clk(&comment) {
-            self.clock_times.push(clk_time);
-        }
+        // self.comments.push(comment.clone()); // ideally just the non-eval comments
+        // self.evals.push(eval_value);
+        // self.clock_times.push(clk_time);
     }
 
     fn begin_variation(&mut self) -> Skip {
