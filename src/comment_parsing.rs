@@ -19,30 +19,24 @@ pub fn comments(input: &str) -> IResult<&str, Vec<String>> {
 fn tag_parser(input: &str) -> IResult<&str, String> {
     delimited(
         tuple((char('['), char('%'))),
-        alt((
-            map(
-                tuple((tag("eval"), spacing, signed_number)),
-                |(_, _, value)| format!("[eval {}]", value),
-            ),
-            map(tuple((tag("clk"), spacing, time_value)), |(_, _, value)| {
-                format!("[clk {}]", value)
-            }),
-        )),
+        alt((eval_parser, clk_parser)),
         char(']'),
     )(input)
 }
 
-/// Parser for a tag name (eval or clk)
-fn tag_name(input: &str) -> IResult<&str, &str> {
-    alt((tag("eval"), tag("clk")))(input)
+/// Parser for an eval tag
+fn eval_parser(input: &str) -> IResult<&str, String> {
+    map(
+        tuple((tag("eval"), spacing, signed_number)),
+        |(_, _, value)| format!("[eval {}]", value),
+    )(input)
 }
 
-/// Parser for a tag value (signed_number or time_value)
-fn tag_value(input: &str) -> IResult<&str, String> {
-    alt((
-        map(time_value, |s| s.to_string()),
-        map(signed_number, |s| s.to_string()),
-    ))(input)
+/// Parser for a clk tag
+fn clk_parser(input: &str) -> IResult<&str, String> {
+    map(tuple((tag("clk"), spacing, time_value)), |(_, _, value)| {
+        format!("[clk {}]", value)
+    })(input)
 }
 
 /// Parser for a signed number
@@ -109,6 +103,21 @@ mod tests {
     fn test_tag_parser_incorrect_name() {
         let input = "[%clk 123]";
         let result = tag_parser(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_clk_parser() {
+        let input = "clk 12:34:56";
+        let result = clk_parser(input);
+        assert!(result.is_ok());
+        let (_, parsed) = result.unwrap();
+        assert_eq!(parsed, "[clk 12:34:56]");
+    }
+    #[test]
+    fn test_clk_parser_incorrect_name() {
+        let input = "eval 123";
+        let result = clk_parser(input);
         assert!(result.is_err());
     }
 
