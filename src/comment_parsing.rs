@@ -8,7 +8,7 @@ use nom::{
     IResult,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CommentContent {
     Text(String),
     Eval(f64),
@@ -107,7 +107,14 @@ mod tests {
         let result = comments(input);
         assert!(result.is_ok());
         let (_, parsed) = result.unwrap();
-        // assert_eq!(parsed, vec!["[eval 123]", " some text ", "[clk 12:34:56]"]);
+        assert_eq!(
+            parsed,
+            vec![
+                CommentContent::Eval(123.0),
+                CommentContent::Text(" some text ".to_string()),
+                CommentContent::ClkTime((12, 34, 56))
+            ]
+        );
     }
 
     #[test]
@@ -116,7 +123,13 @@ mod tests {
         let result = comments(input);
         assert!(result.is_ok());
         let (_, parsed) = result.unwrap();
-        // assert_eq!(parsed, vec!["[clk 12:34:56]", " some text "]);
+        assert_eq!(
+            parsed,
+            vec![
+                CommentContent::ClkTime((12, 34, 56)),
+                CommentContent::Text(" some text ".to_string())
+            ]
+        );
     }
 
     #[test]
