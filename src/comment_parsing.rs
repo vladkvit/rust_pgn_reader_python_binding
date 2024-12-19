@@ -17,13 +17,18 @@ pub fn comments(input: &str) -> IResult<&str, Vec<String>> {
 
 /// Parser for a tag
 fn tag_parser(input: &str) -> IResult<&str, String> {
-    map(
-        delimited(
-            char('['),
-            tuple((char('%'), tag_name, spacing, tag_value)),
-            char(']'),
-        ),
-        |(_, name, _, value)| format!("[{} {}]", name, value),
+    delimited(
+        tuple((char('['), char('%'))),
+        alt((
+            map(
+                tuple((tag("eval"), spacing, signed_number)),
+                |(_, _, value)| format!("[eval {}]", value),
+            ),
+            map(tuple((tag("clk"), spacing, time_value)), |(_, _, value)| {
+                format!("[clk {}]", value)
+            }),
+        )),
+        char(']'),
     )(input)
 }
 
@@ -98,6 +103,13 @@ mod tests {
         assert!(result.is_ok());
         let (_, parsed) = result.unwrap();
         assert_eq!(parsed, "[eval 123]");
+    }
+
+    #[test]
+    fn test_tag_parser_incorrect_name() {
+        let input = "[%clk 123]";
+        let result = tag_parser(input);
+        assert!(result.is_err());
     }
 
     #[test]
