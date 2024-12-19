@@ -1,5 +1,7 @@
 use shakmaty::{uci::UciMove, Chess, Position};
 
+use crate::comment_parsing::comments;
+use crate::comment_parsing::CommentContent;
 use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use std::io::Cursor;
@@ -72,20 +74,20 @@ impl Visitor for MoveExtractor {
 
     fn comment(&mut self, _comment: RawComment<'_>) {
         let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
-
-        match comment_parsing::comments(&comment) {
+        match comments(&comment) {
             Ok((remaining_input, parsed_comments)) => {
-                // println!("Remaining input: {}", remaining_input);
-                // println!("Parsed comments: {:?}", parsed_comments);
+                for content in parsed_comments {
+                    match content {
+                        CommentContent::Text(text) => self.comments.push(text),
+                        CommentContent::Eval(eval_value) => self.evals.push(eval_value),
+                        CommentContent::ClkTime(clk_time) => self.clock_times.push(clk_time),
+                    }
+                }
             }
             Err(e) => {
-                // eprintln!("Error parsing comment: {:?}", e);
+                eprintln!("Error parsing comment: {:?}", e);
             }
         }
-
-        // self.comments.push(comment.clone()); // ideally just the non-eval comments
-        // self.evals.push(eval_value);
-        // self.clock_times.push(clk_time);
     }
 
     fn begin_variation(&mut self) -> Skip {
