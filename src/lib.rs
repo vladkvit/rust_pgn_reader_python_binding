@@ -22,7 +22,7 @@ struct MoveExtractor {
     evals: Vec<f64>,
 
     #[pyo3(get)]
-    clock_times: Vec<String>,
+    clock_times: Vec<(u32, u32, u32)>,
 
     pos: Chess,
 }
@@ -75,11 +75,11 @@ impl Visitor for MoveExtractor {
 
         match comment_parsing::comments(&comment) {
             Ok((remaining_input, parsed_comments)) => {
-                println!("Remaining input: {}", remaining_input);
-                println!("Parsed comments: {:?}", parsed_comments);
+                // println!("Remaining input: {}", remaining_input);
+                // println!("Parsed comments: {:?}", parsed_comments);
             }
             Err(e) => {
-                eprintln!("Error parsing comment: {:?}", e);
+                // eprintln!("Error parsing comment: {:?}", e);
             }
         }
 
