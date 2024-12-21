@@ -1,6 +1,6 @@
 use shakmaty::{uci::UciMove, Chess, Position};
 
-use crate::comment_parsing::comments;
+use crate::comment_parsing::parse_comments;
 use crate::comment_parsing::CommentContent;
 use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
@@ -74,19 +74,23 @@ impl Visitor for MoveExtractor {
 
     fn comment(&mut self, _comment: RawComment<'_>) {
         let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
-        match comments(&comment) {
+        match parse_comments(&comment) {
             Ok((remaining_input, parsed_comments)) => {
                 if !remaining_input.is_empty() {
                     eprintln!("Unparsed remaining input: {:?}", remaining_input);
                     return;
                 }
-
                 let mut eval_encountered = false;
                 let mut clk_time_encountered = false;
+                let mut move_comments = String::new();
 
                 for content in parsed_comments {
                     match content {
-                        CommentContent::Text(text) => self.comments.push(text),
+                        CommentContent::Text(text) => {
+                            if text.trim() != "" {
+                                move_comments.push_str(&text);
+                            }
+                        }
                         CommentContent::Eval(eval_value) => {
                             if eval_encountered {
                                 eprintln!("Multiple Eval values found in comment: {:?}", _comment);
@@ -108,6 +112,7 @@ impl Visitor for MoveExtractor {
                         }
                     }
                 }
+                self.comments.push(move_comments); // Add the concatenated comment string
             }
             Err(e) => {
                 eprintln!("Error parsing comment: {:?}", e);

@@ -15,7 +15,7 @@ pub enum CommentContent {
     ClkTime((u32, u32, u32)),
 }
 
-pub fn comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
+pub fn parse_comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
     many0(alt((
         map(tag_parser, |s| match s.as_str() {
             eval if eval.starts_with("[eval ") => {
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn test_comments1() {
         let input = "[%eval 123] some text [%clk 12:34:56]";
-        let result = comments(input);
+        let result = parse_comments(input);
         assert!(result.is_ok());
         let (remaining, parsed) = result.unwrap();
         assert_eq!(
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn test_comments2() {
         let input = "[%clk 12:34:56] some text ";
-        let result = comments(input);
+        let result = parse_comments(input);
         assert!(result.is_ok());
         let (remaining, parsed) = result.unwrap();
         assert_eq!(
