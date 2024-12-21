@@ -90,8 +90,21 @@ fn mate_eval(input: &str) -> IResult<&str, String> {
 /// Parser for a time value
 fn time_value(input: &str) -> IResult<&str, String> {
     map(
-        tuple((digit1, char(':'), digit1, char(':'), digit1)),
-        |(h, _, m, _, s)| format!("{}:{}:{}", h, m, s),
+        tuple((
+            digit1,    // Hours
+            char(':'), // Colon separator
+            digit1,    // Minutes
+            char(':'), // Colon separator
+            digit1,    // Seconds
+            opt(preceded(
+                char('.'), // Dot separator
+                digit1,    // Fractional seconds
+            )),
+        )),
+        |(h, _, m, _, s, frac)| match frac {
+            Some(f) => format!("{}:{}:{}.{}", h, m, s, f),
+            None => format!("{}:{}:{}", h, m, s),
+        },
     )(input)
 }
 
@@ -212,6 +225,16 @@ mod tests {
         assert!(result.is_ok());
         let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "12:34:56");
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_time_value_fractional() {
+        let input = "12:34:56.12345";
+        let result = time_value(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(parsed, "12:34:56.12345");
         assert_eq!(remaining, "");
     }
 }
