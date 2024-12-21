@@ -16,7 +16,7 @@ pgn_moves = """
 13. b3?? { [%eval -4.14] [%clk 0:00:02] } 13... Nf4? { [%eval -2.73] [%clk 0:00:21] } 0-1
 """
 
-extractor = rust_pgn_reader_python_binding.parse_moves(pgn_moves)
+extractor = rust_pgn_reader_python_binding.parse_game(pgn_moves)
 
 print(extractor.moves)
 print(extractor.comments)
