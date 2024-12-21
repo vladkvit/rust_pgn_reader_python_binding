@@ -140,9 +140,7 @@ impl Visitor for MoveExtractor {
     }
 }
 
-/// Parses a full PGN game and returns a list of SAN moves and parsed comments
-#[pyfunction]
-fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
+fn parse_single_game(pgn: &str) -> PyResult<MoveExtractor> {
     let mut reader = BufferedReader::new(Cursor::new(pgn));
     let mut extractor = MoveExtractor::new();
 
@@ -158,26 +156,17 @@ fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
     }
 }
 
+/// Parses a full PGN game and returns a list of SAN moves and parsed comments
+#[pyfunction]
+fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
+    parse_single_game(pgn)
+}
+
+/// In parallel, parse a set of games
 #[pyfunction]
 fn parse_games(pgns: Vec<String>) -> PyResult<Vec<MoveExtractor>> {
-    let results: Vec<PyResult<MoveExtractor>> = pgns
-        .par_iter()
-        .map(|pgn| {
-            let mut reader = BufferedReader::new(Cursor::new(pgn));
-            let mut extractor = MoveExtractor::new();
-
-            match reader.read_game(&mut extractor) {
-                Ok(Some(_)) => Ok(extractor),
-                Ok(None) => Err(pyo3::exceptions::PyValueError::new_err(
-                    "No game found in PGN",
-                )),
-                Err(err) => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "Parsing error: {}",
-                    err
-                ))),
-            }
-        })
-        .collect();
+    let results: Vec<PyResult<MoveExtractor>> =
+        pgns.par_iter().map(|pgn| parse_single_game(pgn)).collect();
 
     // Convert results to a single PyResult, aggregating errors
     let extractors: Vec<MoveExtractor> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
