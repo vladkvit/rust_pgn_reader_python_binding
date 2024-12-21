@@ -12,7 +12,7 @@ use nom::{
 pub enum CommentContent {
     Text(String),
     Eval(f64),
-    ClkTime((u32, u32, u32)),
+    ClkTime((u32, u8, f64)),
 }
 
 pub fn parse_comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
@@ -133,7 +133,7 @@ mod tests {
             vec![
                 CommentContent::Eval(123.0),
                 CommentContent::Text(" some text ".to_string()),
-                CommentContent::ClkTime((12, 34, 56))
+                CommentContent::ClkTime((12, 34, 56.0))
             ]
         );
         assert_eq!(remaining, "");
@@ -148,10 +148,20 @@ mod tests {
         assert_eq!(
             parsed,
             vec![
-                CommentContent::ClkTime((12, 34, 56)),
+                CommentContent::ClkTime((12, 34, 56.0)),
                 CommentContent::Text(" some text ".to_string())
             ]
         );
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_comment_fractional_sec() {
+        let input = "[%clk 12:34:56.0123]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(parsed, vec![CommentContent::ClkTime((12, 34, 56.0123)),]);
         assert_eq!(remaining, "");
     }
 
