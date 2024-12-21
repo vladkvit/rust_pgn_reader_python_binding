@@ -76,11 +76,36 @@ impl Visitor for MoveExtractor {
         let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
         match comments(&comment) {
             Ok((remaining_input, parsed_comments)) => {
+                if !remaining_input.is_empty() {
+                    eprintln!("Unparsed remaining input: {:?}", remaining_input);
+                    return;
+                }
+
+                let mut eval_encountered = false;
+                let mut clk_time_encountered = false;
+
                 for content in parsed_comments {
                     match content {
                         CommentContent::Text(text) => self.comments.push(text),
-                        CommentContent::Eval(eval_value) => self.evals.push(eval_value),
-                        CommentContent::ClkTime(clk_time) => self.clock_times.push(clk_time),
+                        CommentContent::Eval(eval_value) => {
+                            if eval_encountered {
+                                eprintln!("Multiple Eval values found in comment: {:?}", _comment);
+                                return;
+                            }
+                            eval_encountered = true;
+                            self.evals.push(eval_value);
+                        }
+                        CommentContent::ClkTime(clk_time) => {
+                            if clk_time_encountered {
+                                eprintln!(
+                                    "Multiple ClkTime values found in comment: {:?}",
+                                    _comment
+                                );
+                                return;
+                            }
+                            clk_time_encountered = true;
+                            self.clock_times.push(clk_time);
+                        }
                     }
                 }
             }
