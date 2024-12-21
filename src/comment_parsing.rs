@@ -106,7 +106,7 @@ mod tests {
         let input = "[%eval 123] some text [%clk 12:34:56]";
         let result = comments(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -115,6 +115,7 @@ mod tests {
                 CommentContent::ClkTime((12, 34, 56))
             ]
         );
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -122,7 +123,7 @@ mod tests {
         let input = "[%clk 12:34:56] some text ";
         let result = comments(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(
             parsed,
             vec![
@@ -130,6 +131,7 @@ mod tests {
                 CommentContent::Text(" some text ".to_string())
             ]
         );
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -137,8 +139,9 @@ mod tests {
         let input = "[%eval 123]";
         let result = tag_parser(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "[eval 123]");
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -153,8 +156,9 @@ mod tests {
         let input = "clk 12:34:56";
         let result = clk_parser(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "[clk 12:34:56]");
+        assert_eq!(remaining, "");
     }
     #[test]
     fn test_clk_parser_incorrect_name() {
@@ -168,8 +172,9 @@ mod tests {
         let input = "some text";
         let result = text(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "some text");
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -177,8 +182,9 @@ mod tests {
         let input = "-123.45";
         let result = signed_number(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "-123.45");
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -186,21 +192,8 @@ mod tests {
         let input = "12:34:56";
         let result = time_value(input);
         assert!(result.is_ok());
-        let (_, parsed) = result.unwrap();
+        let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "12:34:56");
-    }
-}
-
-// Example usage
-fn main() {
-    let input = "   [%eval 123] some text [%clk +12:34:56]  ";
-    match comments(input) {
-        Ok((remaining, parsed)) => {
-            println!("Parsed: {:?}", parsed);
-            println!("Remaining: {:?}", remaining);
-        }
-        Err(err) => {
-            println!("Error: {:?}", err);
-        }
+        assert_eq!(remaining, "");
     }
 }
