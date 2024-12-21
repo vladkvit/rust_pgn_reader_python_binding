@@ -56,7 +56,7 @@ fn tag_parser(input: &str) -> IResult<&str, String> {
 /// Parser for an eval tag
 fn eval_parser(input: &str) -> IResult<&str, String> {
     map(
-        tuple((tag("eval"), spacing, signed_number)),
+        tuple((tag("eval"), spacing, alt((signed_number, mate_eval)))),
         |(_, _, value)| format!("[eval {}]", value),
     )(input)
 }
@@ -77,6 +77,14 @@ fn signed_number(input: &str) -> IResult<&str, String> {
         )),
         |s: &str| s.to_string(),
     )(input)
+}
+
+fn mate_eval(input: &str) -> IResult<&str, String> {
+    let signed_integer = recognize(tuple((
+        opt(char('-')), // Optional minus sign
+        digit1,         // One or more digits
+    )));
+    map(preceded(char('#'), signed_integer), String::from)(input)
 }
 
 /// Parser for a time value
@@ -141,6 +149,16 @@ mod tests {
         assert!(result.is_ok());
         let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, "[eval 123]");
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_eval_mate() {
+        let input = "[%eval #-3]";
+        let result = tag_parser(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(parsed, "[eval -3]"); // TODO mark the mates
         assert_eq!(remaining, "");
     }
 
