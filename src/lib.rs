@@ -24,7 +24,7 @@ struct MoveExtractor {
     evals: Vec<f64>,
 
     #[pyo3(get)]
-    clock_times: Vec<(u32, u32, u32)>,
+    clock_times: Vec<(u32, u8, f64)>,
 
     pos: Chess,
 }
