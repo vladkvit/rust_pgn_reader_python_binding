@@ -13,7 +13,7 @@ pf = ParquetFile(file_path)
 
 for df in pf.iter_row_groups():
     for row in df.movetext:
-        extractor = rust_pgn_reader_python_binding.parse_moves(row)
+        extractor = rust_pgn_reader_python_binding.parse_game(row)
         moves = extractor.moves
         comments = extractor.comments
 

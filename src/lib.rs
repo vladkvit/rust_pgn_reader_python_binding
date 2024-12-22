@@ -129,9 +129,9 @@ impl Visitor for MoveExtractor {
     }
 }
 
-/// Parses PGN movetext and returns a list of SAN moves and parsed comments
+/// Parses a full PGN game and returns a list of SAN moves and parsed comments
 #[pyfunction]
-fn parse_moves(pgn: &str) -> PyResult<MoveExtractor> {
+fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
     let mut reader = BufferedReader::new(Cursor::new(pgn));
     let mut extractor = MoveExtractor::new();
 
@@ -150,6 +150,6 @@ fn parse_moves(pgn: &str) -> PyResult<MoveExtractor> {
 /// A Python module implemented in Rust.
 #[pymodule]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(parse_moves, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_game, m)?)?;
     Ok(())
 }

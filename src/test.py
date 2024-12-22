@@ -4,7 +4,7 @@ import rust_pgn_reader_python_binding
 
 class TestPgnExtraction(unittest.TestCase):
     def run_extractor(self, pgn_string):
-        extractor = rust_pgn_reader_python_binding.parse_moves(pgn_string)
+        extractor = rust_pgn_reader_python_binding.parse_game(pgn_string)
         return extractor
 
     def test_short_pgn(self):
