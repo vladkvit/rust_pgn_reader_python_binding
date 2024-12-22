@@ -10,7 +10,7 @@ mod comment_parsing;
 
 #[pyclass]
 /// A Visitor to extract SAN moves and comments from PGN movetext
-struct MoveExtractor {
+pub struct MoveExtractor {
     #[pyo3(get)]
     moves: Vec<String>,
 
@@ -140,44 +140,45 @@ impl Visitor for MoveExtractor {
     }
 }
 
-fn parse_single_game(pgn: &str) -> PyResult<MoveExtractor> {
+// --- Native Rust versions (no PyResult) ---
+pub fn parse_single_game_native(pgn: &str) -> Result<MoveExtractor, String> {
     let mut reader = BufferedReader::new(Cursor::new(pgn));
     let mut extractor = MoveExtractor::new();
-
     match reader.read_game(&mut extractor) {
         Ok(Some(_)) => Ok(extractor),
-        Ok(None) => Err(pyo3::exceptions::PyValueError::new_err(
-            "No game found in PGN",
-        )),
-        Err(err) => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Parsing error: {}",
-            err
-        ))),
+        Ok(None) => Err("No game found in PGN".to_string()),
+        Err(err) => Err(format!("Parsing error: {}", err)),
     }
 }
 
-fn parse_multiple_games(pgns: Vec<String>) -> PyResult<Vec<MoveExtractor>> {
-    let results: Vec<PyResult<MoveExtractor>> =
-        pgns.par_iter().map(|pgn| parse_single_game(pgn)).collect();
+pub fn parse_multiple_games_native(pgns: &[String]) -> Result<Vec<MoveExtractor>, String> {
+    let results: Vec<Result<MoveExtractor, String>> = pgns
+        .par_iter()
+        .map(|pgn| parse_single_game_native(pgn))
+        .collect();
 
-    // Convert results to a single PyResult, aggregating errors
-    let extractors: Vec<MoveExtractor> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let mut extractors = Vec::with_capacity(results.len());
+    for res in results {
+        match res {
+            Ok(extractor) => extractors.push(extractor),
+            Err(e) => return Err(e),
+        }
+    }
     Ok(extractors)
 }
 
-/// Parses a full PGN game and returns a list of SAN moves and parsed comments
+// --- Python-facing wrappers (PyResult) ---
 #[pyfunction]
 fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
-    parse_single_game(pgn)
+    parse_single_game_native(pgn).map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
 /// In parallel, parse a set of games
 #[pyfunction]
 fn parse_games(pgns: Vec<String>) -> PyResult<Vec<MoveExtractor>> {
-    parse_multiple_games(pgns)
+    parse_multiple_games_native(&pgns).map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
-/// A Python module implemented in Rust.
 #[pymodule]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
