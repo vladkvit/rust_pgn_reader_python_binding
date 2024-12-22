@@ -14,6 +14,8 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games).
 | [chess-library](https://github.com/Disservin/chess-library)                | PGN         | 2s     |
 | [python-chess](https://github.com/niklasf/python-chess)                    | PGN         | 3+ min |
 
+The main reason for rust_pgn_reader_python_binding being slower (at least in single threaded mode) than rust-pgn-reader is because of vector / string allocations (that show up as malloc's and free's in profiling).
+
 ## Building
 `maturin develop`
 `maturin develop --release`
