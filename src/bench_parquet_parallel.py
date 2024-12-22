@@ -1,5 +1,5 @@
 import rust_pgn_reader_python_binding
-from fastparquet import ParquetFile
+import pyarrow.parquet as pq
 
 from datetime import datetime
 
@@ -9,10 +9,13 @@ file_path = "2013-07-train-00000-of-00001.parquet"
 
 a = datetime.now()
 
-pf = ParquetFile(file_path)
+pf = pq.ParquetFile(file_path)
 
-for df in pf.iter_row_groups():
-    extractors = rust_pgn_reader_python_binding.parse_games(df.movetext)
+for i in range(pf.num_row_groups):
+    table = pf.read_row_group(0, columns=["movetext"])
+    extractors = rust_pgn_reader_python_binding.parse_games(
+        table.column("movetext").to_pylist()
+    )
 
 b = datetime.now()
 print(b - a)
