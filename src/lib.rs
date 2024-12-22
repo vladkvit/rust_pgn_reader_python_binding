@@ -91,7 +91,7 @@ impl Visitor for MoveExtractor {
                 for content in parsed_comments {
                     match content {
                         CommentContent::Text(text) => {
-                            if text.trim() != "" {
+                            if !text.trim().is_empty() {
                                 move_comments.push_str(&text);
                             }
                         }
@@ -116,7 +116,7 @@ impl Visitor for MoveExtractor {
                         }
                     }
                 }
-                self.comments.push(move_comments); // Add the concatenated comment string
+                self.comments.push(move_comments);
             }
             Err(e) => {
                 eprintln!("Error parsing comment: {:?}", e);
