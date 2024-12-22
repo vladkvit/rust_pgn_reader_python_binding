@@ -1,9 +1,9 @@
-use shakmaty::{uci::UciMove, Chess, Outcome, Position};
-
 use crate::comment_parsing::parse_comments;
 use crate::comment_parsing::CommentContent;
 use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
+use rayon::prelude::*;
+use shakmaty::{uci::UciMove, Chess, Outcome, Position};
 use std::io::Cursor;
 
 mod comment_parsing;
@@ -140,9 +140,7 @@ impl Visitor for MoveExtractor {
     }
 }
 
-/// Parses a full PGN game and returns a list of SAN moves and parsed comments
-#[pyfunction]
-fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
+fn parse_single_game(pgn: &str) -> PyResult<MoveExtractor> {
     let mut reader = BufferedReader::new(Cursor::new(pgn));
     let mut extractor = MoveExtractor::new();
 
@@ -158,9 +156,31 @@ fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
     }
 }
 
+fn parse_multiple_games(pgns: Vec<String>) -> PyResult<Vec<MoveExtractor>> {
+    let results: Vec<PyResult<MoveExtractor>> =
+        pgns.par_iter().map(|pgn| parse_single_game(pgn)).collect();
+
+    // Convert results to a single PyResult, aggregating errors
+    let extractors: Vec<MoveExtractor> = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    Ok(extractors)
+}
+
+/// Parses a full PGN game and returns a list of SAN moves and parsed comments
+#[pyfunction]
+fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
+    parse_single_game(pgn)
+}
+
+/// In parallel, parse a set of games
+#[pyfunction]
+fn parse_games(pgns: Vec<String>) -> PyResult<Vec<MoveExtractor>> {
+    parse_multiple_games(pgns)
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_games, m)?)?;
     Ok(())
 }
