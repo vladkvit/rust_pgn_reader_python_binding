@@ -11,7 +11,7 @@ use std::time::Instant;
 
 // use criterion::{criterion_group, criterion_main, Criterion};
 
-use rust_pgn_reader_python_binding::{parse_multiple_games_native, parse_single_game_native};
+use rust_pgn_reader_python_binding::parse_multiple_games_native;
 
 pub fn bench_parquet() {
     let file_path = "2013-07-train-00000-of-00001.parquet";
@@ -50,7 +50,7 @@ pub fn bench_parquet() {
     // Measure start time
     let start = Instant::now();
 
-    let result = parse_multiple_games_native(&movetexts);
+    let result = parse_multiple_games_native(&movetexts, None);
 
     let duration = start.elapsed();
     println!("Time taken: {:?}", duration);

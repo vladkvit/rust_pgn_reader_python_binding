@@ -3,6 +3,7 @@ use crate::comment_parsing::CommentContent;
 use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use shakmaty::{uci::UciMove, Chess, Outcome, Position};
 use std::io::Cursor;
 
@@ -151,20 +152,33 @@ pub fn parse_single_game_native(pgn: &str) -> Result<MoveExtractor, String> {
     }
 }
 
-pub fn parse_multiple_games_native(pgns: &[String]) -> Result<Vec<MoveExtractor>, String> {
-    let results: Vec<Result<MoveExtractor, String>> = pgns
-        .par_iter()
-        .map(|pgn| parse_single_game_native(pgn))
-        .collect();
+pub fn parse_multiple_games_native(
+    pgns: &Vec<String>,
+    num_threads: Option<usize>,
+) -> Result<Vec<MoveExtractor>, String> {
+    let num_threads = num_threads.unwrap_or_else(|| num_cpus::get());
 
-    let mut extractors = Vec::with_capacity(results.len());
-    for res in results {
-        match res {
-            Ok(extractor) => extractors.push(extractor),
-            Err(e) => return Err(e),
+    // Build a custom Rayon thread pool with the desired number of threads
+    let thread_pool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .expect("Failed to build Rayon thread pool");
+
+    thread_pool.install(|| {
+        let results: Vec<Result<MoveExtractor, String>> = pgns
+            .par_iter()
+            .map(|pgn| parse_single_game_native(pgn))
+            .collect();
+
+        let mut extractors: Vec<MoveExtractor> = Vec::with_capacity(results.len());
+        for res in results {
+            match res {
+                Ok(extractor) => extractors.push(extractor),
+                Err(e) => return Err(e),
+            }
         }
-    }
-    Ok(extractors)
+        Ok(extractors)
+    })
 }
 
 // --- Python-facing wrappers (PyResult) ---
@@ -175,8 +189,10 @@ fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
 
 /// In parallel, parse a set of games
 #[pyfunction]
-fn parse_games(pgns: Vec<String>) -> PyResult<Vec<MoveExtractor>> {
-    parse_multiple_games_native(&pgns).map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
+#[pyo3(signature = (pgns, num_threads=None))]
+fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<MoveExtractor>> {
+    parse_multiple_games_native(&pgns, num_threads)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
 #[pymodule]
