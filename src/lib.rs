@@ -1,4 +1,4 @@
-use shakmaty::{uci::UciMove, Chess, Position};
+use shakmaty::{uci::UciMove, Chess, Outcome, Position};
 
 use crate::comment_parsing::parse_comments;
 use crate::comment_parsing::CommentContent;
@@ -26,6 +26,9 @@ struct MoveExtractor {
     #[pyo3(get)]
     clock_times: Vec<(u32, u8, f64)>,
 
+    #[pyo3(get)]
+    outcome: Option<String>,
+
     pos: Chess,
 }
 
@@ -40,6 +43,7 @@ impl MoveExtractor {
             comments: Vec::with_capacity(100),
             evals: Vec::with_capacity(100),
             clock_times: Vec::with_capacity(100),
+            outcome: None,
         }
     }
 }
@@ -122,6 +126,13 @@ impl Visitor for MoveExtractor {
 
     fn begin_variation(&mut self) -> Skip {
         Skip(true) // stay in the mainline
+    }
+
+    fn outcome(&mut self, _outcome: Option<Outcome>) {
+        self.outcome = _outcome.map(|o| match o {
+            Outcome::Decisive { winner } => format!("{:?}", winner),
+            Outcome::Draw => "Draw".to_string(),
+        });
     }
 
     fn end_game(&mut self) -> Self::Result {
