@@ -302,6 +302,60 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
 
+    def test_multithreaded(self):
+        pgns = [
+            "1. d4 Nf6 2. Nf3 c5 3. e3 b6 4. Nc3 e6 5. Bb5 a6 6. Bd3 Bb7 7. O-O b5 8. b3 d5 9. Bb2 Nbd7",
+            "1. e4 {asdf} e5 2. Nf3 Nc6 3. Bb5 Nf6 4. O-O {hello} Bc5 5. d3 d6 6. h3 h6 7. c3 O-O",
+        ]
+        extractor = rust_pgn_reader_python_binding.parse_games(pgns)
+
+        comments_reference = [[], ["asdf", "hello"]]
+
+        self.assertTrue(extractor[0].comments == comments_reference[0])
+        self.assertTrue(extractor[1].comments == comments_reference[1])
+
+        moves_reference = [
+            [
+                "d2d4",
+                "g8f6",
+                "g1f3",
+                "c7c5",
+                "e2e3",
+                "b7b6",
+                "b1c3",
+                "e7e6",
+                "f1b5",
+                "a7a6",
+                "b5d3",
+                "c8b7",
+                "e1g1",
+                "b6b5",
+                "b2b3",
+                "d7d5",
+                "c1b2",
+                "b8d7",
+            ],
+            [
+                "e2e4",
+                "e7e5",
+                "g1f3",
+                "b8c6",
+                "f1b5",
+                "g8f6",
+                "e1g1",
+                "f8c5",
+                "d2d3",
+                "d7d6",
+                "h2h3",
+                "h7h6",
+                "c2c3",
+                "e8g8",
+            ],
+        ]
+
+        self.assertTrue(extractor[0].moves == moves_reference[0])
+        self.assertTrue(extractor[1].moves == moves_reference[1])
+
 
 if __name__ == "__main__":
     unittest.main()
