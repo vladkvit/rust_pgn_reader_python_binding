@@ -183,12 +183,30 @@ class TestPgnExtraction(unittest.TestCase):
         valid_reference = True
         evals_reference = []
         clock_times_reference = []
+        headers_reference = [
+            ("Event", "Rated Classical game"),
+            ("Site", "https://lichess.org/lhy6ehiv"),
+            ("White", "goerch"),
+            ("Black", "niltonrosao001"),
+            ("Result", "0-1"),
+            ("UTCDate", "2013.06.30"),
+            ("UTCTime", "22:10:02"),
+            ("WhiteElo", "1702"),
+            ("BlackElo", "2011"),
+            ("WhiteRatingDiff", "-3"),
+            ("BlackRatingDiff", "+5"),
+            ("ECO", "A46"),
+            ("Opening", "Indian Game: Spielmann-Indian"),
+            ("TimeControl", "600+8"),
+            ("Termination", "Normal"),
+        ]
 
         self.assertTrue(extractor.moves == moves_reference)
         self.assertTrue(extractor.comments == comments_reference)
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
+        self.assertTrue(extractor.headers == headers_reference)
 
     def test_full_pgn_annotated(self):
         pgn_moves = """
