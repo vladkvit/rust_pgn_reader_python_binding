@@ -1,6 +1,6 @@
 use crate::comment_parsing::parse_comments;
 use crate::comment_parsing::CommentContent;
-use pgn_reader::{BufferedReader, RawComment, SanPlus, Skip, Visitor};
+use pgn_reader::{BufferedReader, RawComment, RawHeader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -30,6 +30,9 @@ pub struct MoveExtractor {
     #[pyo3(get)]
     outcome: Option<String>,
 
+    #[pyo3(get)]
+    headers: Vec<(String, String)>,
+
     pos: Chess,
 }
 
@@ -45,12 +48,19 @@ impl MoveExtractor {
             evals: Vec::with_capacity(100),
             clock_times: Vec::with_capacity(100),
             outcome: None,
+            headers: Vec::with_capacity(10),
         }
     }
 }
 
 impl Visitor for MoveExtractor {
     type Result = bool;
+
+    fn header(&mut self, key: &[u8], value: RawHeader<'_>) {
+        let key_str = String::from_utf8_lossy(key).into_owned();
+        let value_str = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        self.headers.push((key_str, value_str));
+    }
 
     fn begin_game(&mut self) {
         self.moves.clear();
