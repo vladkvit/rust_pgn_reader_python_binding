@@ -14,7 +14,7 @@ pf = pq.ParquetFile(file_path)
 for i in range(pf.num_row_groups):
     table = pf.read_row_group(0, columns=["movetext"])
     extractors = rust_pgn_reader_python_binding.parse_games(
-        table.column("movetext").to_pylist()
+        table.column("movetext").to_pylist(), num_threads=4
     )
 
 b = datetime.now()
