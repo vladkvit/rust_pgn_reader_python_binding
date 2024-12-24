@@ -52,14 +52,17 @@ pub fn bench_parquet() {
 
     let result = parse_multiple_games_native(&movetexts);
 
+    let duration = start.elapsed();
+    println!("Time taken: {:?}", duration);
+
     match result {
         Ok(parsed) => println!("Parsed {} games.", parsed.len()),
         Err(err) => eprintln!("Error parsing games: {}", err),
     }
 
-    // Measure end time
-    let duration = start.elapsed();
-    println!("Time taken: {:?}", duration);
+    let duration2 = start.elapsed();
+
+    println!("Time after checks: {:?}", duration2);
 }
 
 fn main() {
