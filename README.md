@@ -1,6 +1,6 @@
 # rust_pgn_reader_python_binding
 ## Fast PGN parsing bindings for Python
-This project adds Python bindings to [rust-pgn-reader](https://github.com/niklasf/rust-pgn-reader)
+This project adds Python bindings to [rust-pgn-reader](https://github.com/niklasf/rust-pgn-reader). In addition, it also parses and extracts [%clk ..] and [%eval ..] tags from comments.
 
 ## Benchmarks
 Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games).
