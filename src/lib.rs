@@ -56,7 +56,7 @@ pub struct MoveExtractor {
     headers: Vec<(String, String)>,
 
     #[pyo3(get)]
-    position_status: PositionStatus,
+    position_status: Option<PositionStatus>,
 
     pos: Chess,
 }
@@ -74,14 +74,7 @@ impl MoveExtractor {
             clock_times: Vec::with_capacity(100),
             outcome: None,
             headers: Vec::with_capacity(10),
-            position_status: PositionStatus {
-                is_checkmate: false,
-                is_stalemate: false,
-                legal_move_count: 0,
-                is_game_over: false,
-                insufficient_material: (false, false),
-                turn: false,
-            },
+            position_status: None,
         }
     }
 
@@ -93,7 +86,8 @@ impl MoveExtractor {
     }
 
     fn update_position_status(&mut self) {
-        self.position_status = PositionStatus {
+        // TODO this checks legal_moves() a bunch of times
+        self.position_status = Some(PositionStatus {
             is_checkmate: self.pos.is_checkmate(),
             is_stalemate: self.pos.is_stalemate(),
             legal_move_count: self.pos.legal_moves().len(),
@@ -106,7 +100,7 @@ impl MoveExtractor {
                 Color::White => true,
                 Color::Black => false,
             },
-        };
+        });
     }
 }
 

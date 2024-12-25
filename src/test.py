@@ -435,9 +435,18 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor[0].position_status.is_checkmate)
         self.assertFalse(extractor[0].position_status.is_stalemate)
         self.assertTrue(extractor[0].position_status.is_game_over)
+        self.assertTrue(extractor[0].position_status.legal_move_count == 0)
+        self.assertTrue(extractor[0].position_status.turn == 1)
+        self.assertTrue(extractor[0].position_status.insufficient_material == (0, 0))
+
+        self.assertTrue(extractor[1].position_status is None)
+        extractor[1].update_position_status()
         self.assertFalse(extractor[1].position_status.is_checkmate)
         self.assertFalse(extractor[1].position_status.is_stalemate)
         self.assertFalse(extractor[1].position_status.is_game_over)
+        self.assertTrue(extractor[1].position_status.legal_move_count == 36)
+        self.assertTrue(extractor[1].position_status.turn == 1)
+        self.assertTrue(extractor[1].position_status.insufficient_material == (0, 0))
 
 
 if __name__ == "__main__":
