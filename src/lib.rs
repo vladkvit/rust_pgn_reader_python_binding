@@ -53,34 +53,33 @@ impl MoveExtractor {
         }
     }
 
-    fn is_checkmate(&self) -> bool {
+    fn position_is_checkmate(&self) -> bool {
         self.pos.is_checkmate()
     }
 
-    fn is_stalemate(&self) -> bool {
+    fn position_is_stalemate(&self) -> bool {
         self.pos.is_stalemate()
     }
 
-    fn is_game_over(&self) -> bool {
+    fn position_is_game_over(&self) -> bool {
         self.pos.is_game_over()
     }
 
-    fn is_insufficient_material(&self) -> bool {
-        self.pos.is_insufficient_material()
+    fn position_has_insufficient_material_per_side(&self) -> (bool, bool) {
+        (
+            self.pos.has_insufficient_material(Color::White),
+            self.pos.has_insufficient_material(Color::Black),
+        )
     }
 
-    fn print_outcome(&self) {
-        match self.pos.outcome() {
-            Some(Outcome::Decisive { winner }) => match winner {
-                Color::Black => println!("Black wins"),
-                Color::White => println!("White wins"),
-            },
-            Some(Outcome::Draw) => {
-                println!("It's a draw");
-            }
-            None => {
-                println!("No outcome yet");
-            }
+    fn position_legal_move_count(&self) -> usize {
+        self.pos.legal_moves().len()
+    }
+
+    fn turn(&self) -> bool {
+        match self.pos.turn() {
+            Color::White => true,
+            Color::Black => false,
         }
     }
 }
