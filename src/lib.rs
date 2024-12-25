@@ -51,6 +51,10 @@ impl MoveExtractor {
             headers: Vec::with_capacity(10),
         }
     }
+
+    fn is_checkmate(&self) -> bool {
+        self.pos.is_checkmate()
+    }
 }
 
 impl Visitor for MoveExtractor {
