@@ -4,11 +4,33 @@ use pgn_reader::{BufferedReader, RawComment, RawHeader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use shakmaty::Color;
 use shakmaty::{uci::UciMove, Chess, Outcome, Position};
 use std::io::Cursor;
 
 mod comment_parsing;
 
+#[pyclass]
+#[derive(Clone)]
+pub struct PositionStatus {
+    #[pyo3(get)]
+    is_checkmate: bool,
+
+    #[pyo3(get)]
+    is_stalemate: bool,
+
+    #[pyo3(get)]
+    legal_move_count: usize,
+
+    #[pyo3(get)]
+    is_game_over: bool,
+
+    #[pyo3(get)]
+    insufficient_material: (bool, bool),
+
+    #[pyo3(get)]
+    turn: bool,
+}
 #[pyclass]
 /// A Visitor to extract SAN moves and comments from PGN movetext
 pub struct MoveExtractor {
@@ -33,6 +55,9 @@ pub struct MoveExtractor {
     #[pyo3(get)]
     headers: Vec<(String, String)>,
 
+    #[pyo3(get)]
+    position_status: Option<PositionStatus>,
+
     pos: Chess,
 }
 
@@ -49,7 +74,33 @@ impl MoveExtractor {
             clock_times: Vec::with_capacity(100),
             outcome: None,
             headers: Vec::with_capacity(10),
+            position_status: None,
         }
+    }
+
+    fn turn(&self) -> bool {
+        match self.pos.turn() {
+            Color::White => true,
+            Color::Black => false,
+        }
+    }
+
+    fn update_position_status(&mut self) {
+        // TODO this checks legal_moves() a bunch of times
+        self.position_status = Some(PositionStatus {
+            is_checkmate: self.pos.is_checkmate(),
+            is_stalemate: self.pos.is_stalemate(),
+            legal_move_count: self.pos.legal_moves().len(),
+            is_game_over: self.pos.is_game_over(),
+            insufficient_material: (
+                self.pos.has_insufficient_material(Color::White),
+                self.pos.has_insufficient_material(Color::Black),
+            ),
+            turn: match self.pos.turn() {
+                Color::White => true,
+                Color::Black => false,
+            },
+        });
     }
 }
 
@@ -144,6 +195,7 @@ impl Visitor for MoveExtractor {
             Outcome::Decisive { winner } => format!("{:?}", winner),
             Outcome::Draw => "Draw".to_string(),
         });
+        self.update_position_status();
     }
 
     fn end_game(&mut self) -> Self::Result {

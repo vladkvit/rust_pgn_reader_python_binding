@@ -87,6 +87,9 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
+        self.assertFalse(extractor.position_status.is_checkmate)
+        self.assertFalse(extractor.position_status.is_stalemate)
+        self.assertFalse(extractor.position_status.is_game_over)
 
     def test_full_pgn(self):
         pgn_moves = """
@@ -207,6 +210,9 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
         self.assertTrue(extractor.headers == headers_reference)
+        self.assertFalse(extractor.position_status.is_checkmate)
+        self.assertFalse(extractor.position_status.is_stalemate)
+        self.assertFalse(extractor.position_status.is_game_over)
 
     def test_full_pgn_annotated(self):
         pgn_moves = """
@@ -319,10 +325,13 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
+        self.assertFalse(extractor.position_status.is_checkmate)
+        self.assertFalse(extractor.position_status.is_stalemate)
+        self.assertFalse(extractor.position_status.is_game_over)
 
     def test_multithreaded(self):
         pgns = [
-            "1. d4 Nf6 2. Nf3 c5 3. e3 b6 4. Nc3 e6 5. Bb5 a6 6. Bd3 Bb7 7. O-O b5 8. b3 d5 9. Bb2 Nbd7",
+            "1. Nf3 g6 2. b3 Bg7 3. Nc3 e5 4. Bb2 e4 5. Ng1 d6 6. Rb1 a5 7. Nxe4 Bxb2 8. Rxb2 Nf6 9. Nxf6+ Qxf6 10. Rb1 Ra6 11. e3 Rb6 12. d4 a4 13. bxa4 Nc6 14. Rxb6 cxb6 15. Bb5 Bd7 16. Bxc6 Bxc6 17. Nf3 Bxa4 18. O-O O-O 19. Re1 Rc8 20. Re2 d5 21. Ne5 Qf5 22. Qd3 Bxc2 23. Qxf5 Bxf5 24. h3 b5 25. Rb2 f6 26. Ng4 Rc6 27. Nh6+ Kg7 28. Nxf5+ gxf5 29. Rxb5 Rc7 30. Rxd5 Kg6 31. f4 Kh5 32. Rxf5+ Kh4 33. Rxf6 Kg3 34. d5 Rc1# 0-1",
             "1. e4 {asdf} e5 2. Nf3 Nc6 3. Bb5 Nf6 4. O-O {hello} Bc5 5. d3 d6 6. h3 h6 7. c3 O-O",
         ]
         extractor = rust_pgn_reader_python_binding.parse_games(pgns)
@@ -334,24 +343,74 @@ class TestPgnExtraction(unittest.TestCase):
 
         moves_reference = [
             [
-                "d2d4",
-                "g8f6",
                 "g1f3",
-                "c7c5",
-                "e2e3",
-                "b7b6",
-                "b1c3",
-                "e7e6",
-                "f1b5",
-                "a7a6",
-                "b5d3",
-                "c8b7",
-                "e1g1",
-                "b6b5",
+                "g7g6",
                 "b2b3",
-                "d7d5",
+                "f8g7",
+                "b1c3",
+                "e7e5",
                 "c1b2",
-                "b8d7",
+                "e5e4",
+                "f3g1",
+                "d7d6",
+                "a1b1",
+                "a7a5",
+                "c3e4",
+                "g7b2",
+                "b1b2",
+                "g8f6",
+                "e4f6",
+                "d8f6",
+                "b2b1",
+                "a8a6",
+                "e2e3",
+                "a6b6",
+                "d2d4",
+                "a5a4",
+                "b3a4",
+                "b8c6",
+                "b1b6",
+                "c7b6",
+                "f1b5",
+                "c8d7",
+                "b5c6",
+                "d7c6",
+                "g1f3",
+                "c6a4",
+                "e1g1",
+                "e8g8",
+                "f1e1",
+                "f8c8",
+                "e1e2",
+                "d6d5",
+                "f3e5",
+                "f6f5",
+                "d1d3",
+                "a4c2",
+                "d3f5",
+                "c2f5",
+                "h2h3",
+                "b6b5",
+                "e2b2",
+                "f7f6",
+                "e5g4",
+                "c8c6",
+                "g4h6",
+                "g8g7",
+                "h6f5",
+                "g6f5",
+                "b2b5",
+                "c6c7",
+                "b5d5",
+                "g7g6",
+                "f2f4",
+                "g6h5",
+                "d5f5",
+                "h5h4",
+                "f5f6",
+                "h4g3",
+                "d4d5",
+                "c7c1",
             ],
             [
                 "e2e4",
@@ -373,6 +432,21 @@ class TestPgnExtraction(unittest.TestCase):
 
         self.assertTrue(extractor[0].moves == moves_reference[0])
         self.assertTrue(extractor[1].moves == moves_reference[1])
+        self.assertTrue(extractor[0].position_status.is_checkmate)
+        self.assertFalse(extractor[0].position_status.is_stalemate)
+        self.assertTrue(extractor[0].position_status.is_game_over)
+        self.assertTrue(extractor[0].position_status.legal_move_count == 0)
+        self.assertTrue(extractor[0].position_status.turn == 1)
+        self.assertTrue(extractor[0].position_status.insufficient_material == (0, 0))
+
+        self.assertTrue(extractor[1].position_status is None)
+        extractor[1].update_position_status()
+        self.assertFalse(extractor[1].position_status.is_checkmate)
+        self.assertFalse(extractor[1].position_status.is_stalemate)
+        self.assertFalse(extractor[1].position_status.is_game_over)
+        self.assertTrue(extractor[1].position_status.legal_move_count == 36)
+        self.assertTrue(extractor[1].position_status.turn == 1)
+        self.assertTrue(extractor[1].position_status.insufficient_material == (0, 0))
 
 
 if __name__ == "__main__":
