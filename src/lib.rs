@@ -4,6 +4,7 @@ use pgn_reader::{BufferedReader, RawComment, RawHeader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use shakmaty::Color;
 use shakmaty::{uci::UciMove, Chess, Outcome, Position};
 use std::io::Cursor;
 
@@ -54,6 +55,33 @@ impl MoveExtractor {
 
     fn is_checkmate(&self) -> bool {
         self.pos.is_checkmate()
+    }
+
+    fn is_stalemate(&self) -> bool {
+        self.pos.is_stalemate()
+    }
+
+    fn is_game_over(&self) -> bool {
+        self.pos.is_game_over()
+    }
+
+    fn is_insufficient_material(&self) -> bool {
+        self.pos.is_insufficient_material()
+    }
+
+    fn print_outcome(&self) {
+        match self.pos.outcome() {
+            Some(Outcome::Decisive { winner }) => match winner {
+                Color::Black => println!("Black wins"),
+                Color::White => println!("White wins"),
+            },
+            Some(Outcome::Draw) => {
+                println!("It's a draw");
+            }
+            None => {
+                println!("No outcome yet");
+            }
+        }
     }
 }
 
