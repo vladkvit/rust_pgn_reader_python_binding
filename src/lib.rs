@@ -11,6 +11,27 @@ use std::io::Cursor;
 mod comment_parsing;
 
 #[pyclass]
+#[derive(Clone)]
+pub struct PositionStatus {
+    #[pyo3(get)]
+    is_checkmate: bool,
+
+    #[pyo3(get)]
+    is_stalemate: bool,
+
+    #[pyo3(get)]
+    legal_move_count: usize,
+
+    #[pyo3(get)]
+    is_game_over: bool,
+
+    #[pyo3(get)]
+    insufficient_material: (bool, bool),
+
+    #[pyo3(get)]
+    turn: bool,
+}
+#[pyclass]
 /// A Visitor to extract SAN moves and comments from PGN movetext
 pub struct MoveExtractor {
     #[pyo3(get)]
@@ -34,6 +55,9 @@ pub struct MoveExtractor {
     #[pyo3(get)]
     headers: Vec<(String, String)>,
 
+    #[pyo3(get)]
+    position_status: PositionStatus,
+
     pos: Chess,
 }
 
@@ -50,30 +74,15 @@ impl MoveExtractor {
             clock_times: Vec::with_capacity(100),
             outcome: None,
             headers: Vec::with_capacity(10),
+            position_status: PositionStatus {
+                is_checkmate: false,
+                is_stalemate: false,
+                legal_move_count: 0,
+                is_game_over: false,
+                insufficient_material: (false, false),
+                turn: false,
+            },
         }
-    }
-
-    fn position_is_checkmate(&self) -> bool {
-        self.pos.is_checkmate()
-    }
-
-    fn position_is_stalemate(&self) -> bool {
-        self.pos.is_stalemate()
-    }
-
-    fn position_is_game_over(&self) -> bool {
-        self.pos.is_game_over()
-    }
-
-    fn position_has_insufficient_material_per_side(&self) -> (bool, bool) {
-        (
-            self.pos.has_insufficient_material(Color::White),
-            self.pos.has_insufficient_material(Color::Black),
-        )
-    }
-
-    fn position_legal_move_count(&self) -> usize {
-        self.pos.legal_moves().len()
     }
 
     fn turn(&self) -> bool {
@@ -81,6 +90,23 @@ impl MoveExtractor {
             Color::White => true,
             Color::Black => false,
         }
+    }
+
+    fn update_position_status(&mut self) {
+        self.position_status = PositionStatus {
+            is_checkmate: self.pos.is_checkmate(),
+            is_stalemate: self.pos.is_stalemate(),
+            legal_move_count: self.pos.legal_moves().len(),
+            is_game_over: self.pos.is_game_over(),
+            insufficient_material: (
+                self.pos.has_insufficient_material(Color::White),
+                self.pos.has_insufficient_material(Color::Black),
+            ),
+            turn: match self.pos.turn() {
+                Color::White => true,
+                Color::Black => false,
+            },
+        };
     }
 }
 
@@ -175,6 +201,7 @@ impl Visitor for MoveExtractor {
             Outcome::Decisive { winner } => format!("{:?}", winner),
             Outcome::Draw => "Draw".to_string(),
         });
+        self.update_position_status();
     }
 
     fn end_game(&mut self) -> Self::Result {

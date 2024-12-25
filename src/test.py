@@ -87,9 +87,9 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
-        self.assertFalse(extractor.position_is_checkmate())
-        self.assertFalse(extractor.position_is_stalemate())
-        self.assertFalse(extractor.position_is_game_over())
+        self.assertFalse(extractor.position_status.is_checkmate)
+        self.assertFalse(extractor.position_status.is_stalemate)
+        self.assertFalse(extractor.position_status.is_game_over)
 
     def test_full_pgn(self):
         pgn_moves = """
@@ -210,9 +210,9 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
         self.assertTrue(extractor.headers == headers_reference)
-        self.assertFalse(extractor.position_is_checkmate())
-        self.assertFalse(extractor.position_is_stalemate())
-        self.assertFalse(extractor.position_is_game_over())
+        self.assertFalse(extractor.position_status.is_checkmate)
+        self.assertFalse(extractor.position_status.is_stalemate)
+        self.assertFalse(extractor.position_status.is_game_over)
 
     def test_full_pgn_annotated(self):
         pgn_moves = """
@@ -325,9 +325,9 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
-        self.assertFalse(extractor.position_is_checkmate())
-        self.assertFalse(extractor.position_is_stalemate())
-        self.assertFalse(extractor.position_is_game_over())
+        self.assertFalse(extractor.position_status.is_checkmate)
+        self.assertFalse(extractor.position_status.is_stalemate)
+        self.assertFalse(extractor.position_status.is_game_over)
 
     def test_multithreaded(self):
         pgns = [
@@ -432,12 +432,12 @@ class TestPgnExtraction(unittest.TestCase):
 
         self.assertTrue(extractor[0].moves == moves_reference[0])
         self.assertTrue(extractor[1].moves == moves_reference[1])
-        self.assertTrue(extractor[0].position_is_checkmate())
-        self.assertFalse(extractor[0].position_is_stalemate())
-        self.assertTrue(extractor[0].position_is_game_over())
-        self.assertFalse(extractor[1].position_is_checkmate())
-        self.assertFalse(extractor[1].position_is_stalemate())
-        self.assertFalse(extractor[1].position_is_game_over())
+        self.assertTrue(extractor[0].position_status.is_checkmate)
+        self.assertFalse(extractor[0].position_status.is_stalemate)
+        self.assertTrue(extractor[0].position_status.is_game_over)
+        self.assertFalse(extractor[1].position_status.is_checkmate)
+        self.assertFalse(extractor[1].position_status.is_stalemate)
+        self.assertFalse(extractor[1].position_status.is_game_over)
 
 
 if __name__ == "__main__":
