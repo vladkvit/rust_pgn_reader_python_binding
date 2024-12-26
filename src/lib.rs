@@ -257,6 +257,7 @@ fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<Mo
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
+// Parser for chess PGN notation
 #[pymodule]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
