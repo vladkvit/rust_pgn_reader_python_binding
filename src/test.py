@@ -448,6 +448,32 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor[1].position_status.turn == 1)
         self.assertTrue(extractor[1].position_status.insufficient_material == (0, 0))
 
+    def test_castling(self):
+        pgn_moves = """
+        1. e4 e5 2. Bc4 c6 3. Nf3 d6 4. Rg1 f6 5. Rh1 g6 6. Ke2 b6 7. Ke1 g5
+        """
+
+        extractor = self.run_extractor(pgn_moves)
+
+        castling_reference = [
+            (True, True, True, True),
+            (True, True, True, True),
+            (True, True, True, True),
+            (True, True, True, True),
+            (True, True, True, True),
+            (True, True, True, True),
+            (True, False, True, True),
+            (True, False, True, True),
+            (True, False, True, True),
+            (True, False, True, True),
+            (False, False, True, True),
+            (False, False, True, True),
+            (False, False, True, True),
+            (False, False, True, True),
+        ]
+
+        self.assertTrue(extractor.castling_rights == castling_reference)
+
 
 if __name__ == "__main__":
     unittest.main()

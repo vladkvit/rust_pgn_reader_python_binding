@@ -56,6 +56,9 @@ pub struct MoveExtractor {
     headers: Vec<(String, String)>,
 
     #[pyo3(get)]
+    castling_rights: Vec<(bool, bool, bool, bool)>,
+
+    #[pyo3(get)]
     position_status: Option<PositionStatus>,
 
     pos: Chess,
@@ -74,6 +77,7 @@ impl MoveExtractor {
             clock_times: Vec::with_capacity(100),
             outcome: None,
             headers: Vec::with_capacity(10),
+            castling_rights: Vec::with_capacity(100),
             position_status: None,
         }
     }
@@ -129,6 +133,17 @@ impl Visitor for MoveExtractor {
                     self.pos.play_unchecked(&m);
                     let uci = UciMove::from_standard(&m);
                     self.moves.push(uci.to_string());
+                    // self.pos.castles().castling_rights();
+                    // println!("castling {:?}", self.pos.castles());
+                    let castling_bitboard = self.pos.castles().castling_rights();
+                    let castling_rights = (
+                        castling_bitboard.contains(shakmaty::Square::A1),
+                        castling_bitboard.contains(shakmaty::Square::H1),
+                        castling_bitboard.contains(shakmaty::Square::A8),
+                        castling_bitboard.contains(shakmaty::Square::H8),
+                    );
+
+                    self.castling_rights.push(castling_rights);
                 }
                 Err(err) => {
                     eprintln!("error in game: {} {}", err, san_plus);
