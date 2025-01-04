@@ -89,6 +89,18 @@ impl MoveExtractor {
         }
     }
 
+    fn push_castling_bitboards(&mut self) {
+        let castling_bitboard = self.pos.castles().castling_rights();
+        let castling_rights = (
+            castling_bitboard.contains(shakmaty::Square::A1),
+            castling_bitboard.contains(shakmaty::Square::H1),
+            castling_bitboard.contains(shakmaty::Square::A8),
+            castling_bitboard.contains(shakmaty::Square::H8),
+        );
+
+        self.castling_rights.push(castling_rights);
+    }
+
     fn update_position_status(&mut self) {
         // TODO this checks legal_moves() a bunch of times
         self.position_status = Some(PositionStatus {
@@ -124,6 +136,8 @@ impl Visitor for MoveExtractor {
         self.comments.clear();
         self.evals.clear();
         self.clock_times.clear();
+
+        self.push_castling_bitboards();
     }
 
     fn san(&mut self, san_plus: SanPlus) {
@@ -133,17 +147,7 @@ impl Visitor for MoveExtractor {
                     self.pos.play_unchecked(&m);
                     let uci = UciMove::from_standard(&m);
                     self.moves.push(uci.to_string());
-                    // self.pos.castles().castling_rights();
-                    // println!("castling {:?}", self.pos.castles());
-                    let castling_bitboard = self.pos.castles().castling_rights();
-                    let castling_rights = (
-                        castling_bitboard.contains(shakmaty::Square::A1),
-                        castling_bitboard.contains(shakmaty::Square::H1),
-                        castling_bitboard.contains(shakmaty::Square::A8),
-                        castling_bitboard.contains(shakmaty::Square::H8),
-                    );
-
-                    self.castling_rights.push(castling_rights);
+                    self.push_castling_bitboards();
                 }
                 Err(err) => {
                     eprintln!("error in game: {} {}", err, san_plus);
