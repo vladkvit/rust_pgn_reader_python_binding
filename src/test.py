@@ -462,6 +462,7 @@ class TestPgnExtraction(unittest.TestCase):
             (True, True, True, True),
             (True, True, True, True),
             (True, True, True, True),
+            (True, True, True, True),
             (True, False, True, True),
             (True, False, True, True),
             (True, False, True, True),
