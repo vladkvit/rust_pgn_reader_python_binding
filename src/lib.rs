@@ -11,6 +11,7 @@ use std::io::Cursor;
 mod comment_parsing;
 
 #[pyclass]
+/// Holds the status of a chess position.
 #[derive(Clone)]
 pub struct PositionStatus {
     #[pyo3(get)]
@@ -264,6 +265,7 @@ pub fn parse_multiple_games_native(
 
 // --- Python-facing wrappers (PyResult) ---
 #[pyfunction]
+/// Parses a single PGN game string.
 fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
     parse_single_game_native(pgn).map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
@@ -276,10 +278,12 @@ fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<Mo
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
-// Parser for chess PGN notation
+/// Parser for chess PGN notation
 #[pymodule]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
     m.add_function(wrap_pyfunction!(parse_games, m)?)?;
+    m.add_class::<MoveExtractor>()?;
+    m.add_class::<PositionStatus>()?;
     Ok(())
 }
