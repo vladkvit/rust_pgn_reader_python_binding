@@ -253,4 +253,57 @@ mod tests {
         assert_eq!(parsed, "12:34:56.12345");
         assert_eq!(remaining, "");
     }
+
+    #[test]
+    fn test_unknown_tag_is_parsed_as_text() {
+        let input = "[%timestamp 12345] some text";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                // The whole unknown tag becomes a text element
+                CommentContent::Text("[%timestamp 12345]".to_string()),
+                CommentContent::Text(" some text".to_string())
+            ]
+        );
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_clk_tag_with_newline_spacing() {
+        let input = "[%clk\n0:09:36.2]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(parsed, vec![CommentContent::ClkTime((0, 9, 36.2))]);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_eval_tag_with_newline_spacing() {
+        let input = "[%eval\n-0.5]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(parsed, vec![CommentContent::Eval(-0.5)]);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_text_containing_brackets_not_tag() {
+        let input = "Text with [normal brackets] and then [%clk 1:2:3]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                CommentContent::Text("Text with [normal brackets] and then ".to_string()),
+                CommentContent::ClkTime((1, 2, 3.0))
+            ]
+        );
+        assert_eq!(remaining, "");
+    }
 }
