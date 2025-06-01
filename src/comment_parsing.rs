@@ -4,8 +4,8 @@ use nom::{
     character::complete::{char, digit1},
     combinator::{map, opt, recognize},
     multi::{many0, many1},
-    sequence::{delimited, pair, preceded, tuple},
-    IResult,
+    sequence::{delimited, pair, preceded},
+    IResult, Parser,
 };
 
 #[derive(Debug, PartialEq)]
@@ -41,31 +41,35 @@ pub fn parse_comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
             _ => unreachable!(),
         }),
         map(text, |s| CommentContent::Text(s.to_string())),
-    )))(input)
+    )))
+    .parse(input)
 }
 
 /// Parser for a tag
 fn tag_parser(input: &str) -> IResult<&str, String> {
     delimited(
-        tuple((char('['), char('%'))),
+        (char('['), char('%')),
         alt((eval_parser, clk_parser)),
         char(']'),
-    )(input)
+    )
+    .parse(input)
 }
 
 /// Parser for an eval tag
 fn eval_parser(input: &str) -> IResult<&str, String> {
     map(
-        tuple((tag("eval"), spacing, alt((signed_number, mate_eval)))),
+        (tag("eval"), spacing, alt((signed_number, mate_eval))),
         |(_, _, value)| format!("[eval {}]", value),
-    )(input)
+    )
+    .parse(input)
 }
 
 /// Parser for a clk tag
 fn clk_parser(input: &str) -> IResult<&str, String> {
-    map(tuple((tag("clk"), spacing, time_value)), |(_, _, value)| {
+    map((tag("clk"), spacing, time_value), |(_, _, value)| {
         format!("[clk {}]", value)
-    })(input)
+    })
+    .parse(input)
 }
 
 /// Parser for a signed number
@@ -76,21 +80,22 @@ fn signed_number(input: &str) -> IResult<&str, String> {
             recognize(pair(digit1, opt(preceded(char('.'), digit1)))),
         )),
         |s: &str| s.to_string(),
-    )(input)
+    )
+    .parse(input)
 }
 
 fn mate_eval(input: &str) -> IResult<&str, String> {
-    let signed_integer = recognize(tuple((
+    let signed_integer = recognize((
         opt(char('-')), // Optional minus sign
         digit1,         // One or more digits
-    )));
-    map(preceded(char('#'), signed_integer), String::from)(input)
+    ));
+    map(preceded(char('#'), signed_integer), String::from).parse(input)
 }
 
 /// Parser for a time value
 fn time_value(input: &str) -> IResult<&str, String> {
     map(
-        tuple((
+        (
             digit1,    // Hours
             char(':'), // Colon separator
             digit1,    // Minutes
@@ -100,22 +105,23 @@ fn time_value(input: &str) -> IResult<&str, String> {
                 char('.'), // Dot separator
                 digit1,    // Fractional seconds
             )),
-        )),
+        ),
         |(h, _, m, _, s, frac)| match frac {
             Some(f) => format!("{}:{}:{}.{}", h, m, s, f),
             None => format!("{}:{}:{}", h, m, s),
         },
-    )(input)
+    )
+    .parse(input)
 }
 
 /// Parser for text (any characters except '[' and ']')
 fn text(input: &str) -> IResult<&str, &str> {
-    is_not("[]")(input)
+    is_not("[]").parse(input)
 }
 
 /// Parser for spacing (one or more spaces)
 fn spacing(input: &str) -> IResult<&str, &str> {
-    recognize(many1(char(' ')))(input)
+    recognize(many1(char(' '))).parse(input)
 }
 
 #[cfg(test)]

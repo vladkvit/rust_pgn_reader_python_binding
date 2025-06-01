@@ -13,7 +13,7 @@ crate-type = ["lib", "cdylib"]
 pyo3 = "0.25.0"
 shakmaty = "0.27"
 pgn-reader = "0.26.0"
-nom = "7"
+nom = "8.0"
 rayon = "1.10"
 num_cpus = "1.17"
 
