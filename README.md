@@ -27,3 +27,7 @@ For a more thorough tutorial, follow https://lukesalamone.github.io/posts/how-to
 
 Linux/WSL-only:
 `py-spy record -s -F -n -f speedscope --output profile.speedscope -- python ./src/bench_parquet.py`
+
+## Testing
+`cargo test`
+`python -m unittest src/test.py`
