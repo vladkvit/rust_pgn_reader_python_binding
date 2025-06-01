@@ -191,8 +191,9 @@ mod tests {
         assert_eq!(remaining, "");
     }
 
+    // clk expects a particular format: 00:00:00
     #[test]
-    fn test_tag_parser_incorrect_name() {
+    fn test_tag_parser_incorrect_value() {
         let input = "[%clk 123]";
         let result = tag_parser(input);
         assert!(result.is_err());
