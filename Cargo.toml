@@ -16,6 +16,8 @@ pgn-reader = "0.26.0"
 nom = "8.0"
 rayon = "1.10"
 num_cpus = "1.17"
+arrow-array = "55"
+pyo3-arrow = "0.10"
 
 [dev-dependencies]
 criterion = "0.6"

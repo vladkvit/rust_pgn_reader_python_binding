@@ -1,7 +1,9 @@
 use crate::comment_parsing::parse_comments;
 use crate::comment_parsing::CommentContent;
+use arrow_array::{Array, LargeStringArray, StringArray};
 use pgn_reader::{BufferedReader, RawComment, RawHeader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
+use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use shakmaty::Color;
@@ -337,6 +339,51 @@ pub fn parse_multiple_games_native(
     })
 }
 
+// --- Native Rust versions (no PyResult) --- (Continued)
+fn _parse_games_from_arrow_chunks_native(
+    pgn_chunked_array: &PyChunkedArray,
+    num_threads: Option<usize>,
+) -> Result<Vec<MoveExtractor>, String> {
+    let num_threads = num_threads.unwrap_or_else(|| num_cpus::get());
+    let thread_pool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .map_err(|e| format!("Failed to build Rayon thread pool: {}", e))?;
+
+    let mut num_elements = 0;
+    for chunk in pgn_chunked_array.chunks() {
+        num_elements += chunk.len();
+    }
+    let mut pgn_str_slices: Vec<&str> = Vec::with_capacity(num_elements);
+    for chunk in pgn_chunked_array.chunks() {
+        if let Some(string_array) = chunk.as_any().downcast_ref::<StringArray>() {
+            for i in 0..string_array.len() {
+                if string_array.is_valid(i) {
+                    pgn_str_slices.push(string_array.value(i));
+                }
+            }
+        } else if let Some(large_string_array) = chunk.as_any().downcast_ref::<LargeStringArray>() {
+            for i in 0..large_string_array.len() {
+                if large_string_array.is_valid(i) {
+                    pgn_str_slices.push(large_string_array.value(i));
+                }
+            }
+        } else {
+            return Err(format!(
+                "Unsupported array type in ChunkedArray: {:?}",
+                chunk.data_type()
+            ));
+        }
+    }
+
+    thread_pool.install(|| {
+        pgn_str_slices
+            .par_iter()
+            .map(|&pgn_s| parse_single_game_native(pgn_s))
+            .collect::<Result<Vec<MoveExtractor>, String>>()
+    })
+}
+
 // --- Python-facing wrappers (PyResult) ---
 #[pyfunction]
 /// Parses a single PGN game string.
@@ -352,11 +399,22 @@ fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<Mo
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
+#[pyfunction]
+#[pyo3(signature = (pgn_chunked_array, num_threads=None))]
+fn parse_games_arrow_chunked_array(
+    pgn_chunked_array: PyChunkedArray,
+    num_threads: Option<usize>,
+) -> PyResult<Vec<MoveExtractor>> {
+    _parse_games_from_arrow_chunks_native(&pgn_chunked_array, num_threads)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
+}
+
 /// Parser for chess PGN notation
 #[pymodule]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
     m.add_function(wrap_pyfunction!(parse_games, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_games_arrow_chunked_array, m)?)?;
     m.add_class::<MoveExtractor>()?;
     m.add_class::<PositionStatus>()?;
     m.add_class::<PyUciMove>()?;
