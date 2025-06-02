@@ -1,8 +1,8 @@
 use nom::{
     branch::alt,
     bytes::complete::{is_not, tag},
-    character::complete::{char, digit1},
-    combinator::{map, map_res, opt, recognize},
+    character::complete::{char, digit1, multispace1},
+    combinator::{map, map_res, not, opt, peek, recognize},
     multi::{many0, many1},
     sequence::{delimited, pair, preceded},
     IResult, Parser,
@@ -27,8 +27,22 @@ pub enum CommentContent {
 
 pub fn parse_comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
     many0(alt((
+        // Attempt to parse a known structured tag first
         map(parse_structured_tag, CommentContent::Tag),
-        map(text_content, |s| CommentContent::Text(s.to_string())),
+        // If not a known tag, but looks like a tag (e.g. [%unknown ...]), parse as text
+        map(
+            recognize(delimited(tag("[%"), is_not("]"), char(']'))),
+            |s: &str| CommentContent::Text(s.to_string()),
+        ),
+        // Otherwise, parse as regular text content. This must not be empty.
+        map(
+            recognize(many1(alt((
+                is_not("["), // Takes any char except '['
+                // Takes a '[' if it's NOT followed by '%' (to allow "[abc]" as text)
+                recognize(preceded(char('['), peek(not(char('%'))))),
+            )))),
+            |s: &str| CommentContent::Text(s.to_string()),
+        ),
     )))
     .parse(input)
 }
@@ -122,14 +136,9 @@ fn parse_seconds_with_fraction(input: &str) -> IResult<&str, f64> {
     .parse(input)
 }
 
-/// Parser for text content (any characters except '[' and ']')
-fn text_content(input: &str) -> IResult<&str, &str> {
-    is_not("[]").parse(input)
-}
-
-/// Parser for one or more spaces
+/// Parser for one or more whitespace characters (spaces, newlines, tabs, etc.)
 fn spacing(input: &str) -> IResult<&str, &str> {
-    recognize(many1(char(' '))).parse(input)
+    multispace1(input)
 }
 
 #[cfg(test)]
@@ -298,16 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn test_text_content() {
-        let input = "some text";
-        let result = text_content(input);
-        assert!(result.is_ok());
-        let (remaining, parsed) = result.unwrap();
-        assert_eq!(parsed, "some text");
-        assert_eq!(remaining, "");
-    }
-
-    #[test]
     fn test_parse_signed_float_positive() {
         let input = "123.45";
         let result = parse_signed_float(input);
@@ -398,6 +397,70 @@ mod tests {
         assert!(result.is_ok());
         let (remaining, parsed) = result.unwrap();
         assert_eq!(parsed, 3.141);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_unknown_tag_is_parsed_as_text() {
+        let input = "[%timestamp 12345] some text";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                // The whole unknown tag becomes a text element
+                CommentContent::Text("[%timestamp 12345]".to_string()),
+                CommentContent::Text(" some text".to_string()) // Note: leading space is part of the text
+            ]
+        );
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_clk_tag_with_newline_spacing() {
+        let input = "[%clk\n0:09:36.2]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(
+            parsed,
+            vec![CommentContent::Tag(ParsedTag::ClkTime {
+                hours: 0,
+                minutes: 9,
+                seconds: 36.2
+            })]
+        );
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_eval_tag_with_newline_spacing() {
+        let input = "[%eval\n-0.5]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(parsed, vec![CommentContent::Tag(ParsedTag::Eval(-0.5))]);
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_text_containing_brackets_not_tag() {
+        let input = "Text with [normal brackets] and then [%clk 1:2:3]";
+        let result = parse_comments(input);
+        assert!(result.is_ok());
+        let (remaining, parsed) = result.unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                CommentContent::Text("Text with [normal brackets] and then ".to_string()),
+                CommentContent::Tag(ParsedTag::ClkTime {
+                    hours: 1,
+                    minutes: 2,
+                    seconds: 3.0
+                })
+            ]
+        );
         assert_eq!(remaining, "");
     }
 }
