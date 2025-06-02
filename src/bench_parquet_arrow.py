@@ -12,7 +12,7 @@ movetext_arrow_array = pf.read(columns=["movetext"]).column("movetext")
 
 a = datetime.now()
 
-extractors = rust_pgn_reader_python_binding.parse_games_arrow_chunked_array(
+extractors = rust_pgn_reader_python_binding.parse_game_moves_arrow_chunked_array(
     movetext_arrow_array
 )
 

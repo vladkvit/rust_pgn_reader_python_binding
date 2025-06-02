@@ -359,7 +359,7 @@ pub fn parse_multiple_games_native(
     })
 }
 
-fn _parse_games_from_arrow_chunks_native(
+fn _parse_game_moves_from_arrow_chunks_native(
     pgn_chunked_array: &PyChunkedArray,
     num_threads: Option<usize>,
 ) -> Result<Vec<MoveExtractor>, String> {
@@ -422,11 +422,11 @@ fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<Mo
 
 #[pyfunction]
 #[pyo3(signature = (pgn_chunked_array, num_threads=None))]
-fn parse_games_arrow_chunked_array(
+fn parse_game_moves_arrow_chunked_array(
     pgn_chunked_array: PyChunkedArray,
     num_threads: Option<usize>,
 ) -> PyResult<Vec<MoveExtractor>> {
-    _parse_games_from_arrow_chunks_native(&pgn_chunked_array, num_threads)
+    _parse_game_moves_from_arrow_chunks_native(&pgn_chunked_array, num_threads)
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err))
 }
 
@@ -435,7 +435,7 @@ fn parse_games_arrow_chunked_array(
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
     m.add_function(wrap_pyfunction!(parse_games, m)?)?;
-    m.add_function(wrap_pyfunction!(parse_games_arrow_chunked_array, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_game_moves_arrow_chunked_array, m)?)?;
     m.add_class::<MoveExtractor>()?;
     m.add_class::<PositionStatus>()?;
     m.add_class::<PyUciMove>()?;
