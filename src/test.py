@@ -1,5 +1,6 @@
 import unittest
 import rust_pgn_reader_python_binding
+import pyarrow as pa
 
 
 class TestPgnExtraction(unittest.TestCase):
@@ -478,6 +479,148 @@ class TestPgnExtraction(unittest.TestCase):
         ]
 
         self.assertTrue(extractor.castling_rights == castling_reference)
+
+    def test_parse_game_moves_arrow_chunked_array(self):
+        pgns = [
+            "1. Nf3 g6 2. b3 Bg7 3. Nc3 e5 4. Bb2 e4 5. Ng1 d6 6. Rb1 a5 7. Nxe4 Bxb2 8. Rxb2 Nf6 9. Nxf6+ Qxf6 10. Rb1 Ra6 11. e3 Rb6 12. d4 a4 13. bxa4 Nc6 14. Rxb6 cxb6 15. Bb5 Bd7 16. Bxc6 Bxc6 17. Nf3 Bxa4 18. O-O O-O 19. Re1 Rc8 20. Re2 d5 21. Ne5 Qf5 22. Qd3 Bxc2 23. Qxf5 Bxf5 24. h3 b5 25. Rb2 f6 26. Ng4 Rc6 27. Nh6+ Kg7 28. Nxf5+ gxf5 29. Rxb5 Rc7 30. Rxd5 Kg6 31. f4 Kh5 32. Rxf5+ Kh4 33. Rxf6 Kg3 34. d5 Rc1# 0-1",
+            "1. e4 {asdf} e5 2. Nf3 Nc6 3. Bb5 Nf6 4. O-O {hello} Bc5 5. d3 d6 6. h3 h6 7. c3 O-O",
+        ]
+
+        # Create a PyArrow ChunkedArray
+        arrow_array = pa.array(pgns, type=pa.string())
+        chunked_array = pa.chunked_array([arrow_array])
+
+        extractors = (
+            rust_pgn_reader_python_binding.parse_game_moves_arrow_chunked_array(
+                chunked_array
+            )
+        )
+
+        comments_reference = [[], ["asdf", "hello"]]
+
+        self.assertTrue(extractors[0].comments == comments_reference[0])
+        self.assertTrue(extractors[1].comments == comments_reference[1])
+
+        moves_reference = [
+            [
+                "g1f3",
+                "g7g6",
+                "b2b3",
+                "f8g7",
+                "b1c3",
+                "e7e5",
+                "c1b2",
+                "e5e4",
+                "f3g1",
+                "d7d6",
+                "a1b1",
+                "a7a5",
+                "c3e4",
+                "g7b2",
+                "b1b2",
+                "g8f6",
+                "e4f6",
+                "d8f6",
+                "b2b1",
+                "a8a6",
+                "e2e3",
+                "a6b6",
+                "d2d4",
+                "a5a4",
+                "b3a4",
+                "b8c6",
+                "b1b6",
+                "c7b6",
+                "f1b5",
+                "c8d7",
+                "b5c6",
+                "d7c6",
+                "g1f3",
+                "c6a4",
+                "e1g1",
+                "e8g8",
+                "f1e1",
+                "f8c8",
+                "e1e2",
+                "d6d5",
+                "f3e5",
+                "f6f5",
+                "d1d3",
+                "a4c2",
+                "d3f5",
+                "c2f5",
+                "h2h3",
+                "b6b5",
+                "e2b2",
+                "f7f6",
+                "e5g4",
+                "c8c6",
+                "g4h6",
+                "g8g7",
+                "h6f5",
+                "g6f5",
+                "b2b5",
+                "c6c7",
+                "b5d5",
+                "g7g6",
+                "f2f4",
+                "g6h5",
+                "d5f5",
+                "h5h4",
+                "f5f6",
+                "h4g3",
+                "d4d5",
+                "c7c1",
+            ],
+            [
+                "e2e4",
+                "e7e5",
+                "g1f3",
+                "b8c6",
+                "f1b5",
+                "g8f6",
+                "e1g1",
+                "f8c5",
+                "d2d3",
+                "d7d6",
+                "h2h3",
+                "h7h6",
+                "c2c3",
+                "e8g8",
+            ],
+        ]
+
+        self.assertTrue(
+            [str(move) for move in extractors[0].moves] == moves_reference[0]
+        )
+        self.assertTrue(
+            [str(move) for move in extractors[1].moves] == moves_reference[1]
+        )
+
+        extractors[0].update_position_status()  # Ensure status is calculated
+        self.assertTrue(extractors[0].position_status.is_checkmate)
+        self.assertFalse(extractors[0].position_status.is_stalemate)
+        self.assertTrue(extractors[0].position_status.is_game_over)
+        self.assertTrue(extractors[0].position_status.legal_move_count == 0)
+        self.assertTrue(
+            extractors[0].position_status.turn == True
+        )  # White's turn, but Black delivered checkmate
+        self.assertTrue(
+            extractors[0].position_status.insufficient_material == (False, False)
+        )
+
+        self.assertTrue(
+            extractors[1].position_status is None
+        )  # Not set by default for parse_game_moves_arrow_chunked_array
+        extractors[1].update_position_status()
+        self.assertFalse(extractors[1].position_status.is_checkmate)
+        self.assertFalse(extractors[1].position_status.is_stalemate)
+        self.assertFalse(extractors[1].position_status.is_game_over)
+        self.assertTrue(extractors[1].position_status.legal_move_count == 36)
+        self.assertTrue(extractors[1].position_status.turn == True)  # White's turn
+        self.assertTrue(
+            extractors[1].position_status.insufficient_material == (False, False)
+        )
 
 
 if __name__ == "__main__":
