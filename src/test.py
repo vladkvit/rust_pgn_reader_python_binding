@@ -82,7 +82,7 @@ class TestPgnExtraction(unittest.TestCase):
         evals_reference = []
         clock_times_reference = []
 
-        self.assertTrue(extractor.moves == moves_reference)
+        self.assertTrue([str(move) for move in extractor.moves] == moves_reference)
         self.assertTrue(extractor.comments == comments_reference)
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
@@ -204,7 +204,7 @@ class TestPgnExtraction(unittest.TestCase):
             ("Termination", "Normal"),
         ]
 
-        self.assertTrue(extractor.moves == moves_reference)
+        self.assertTrue([str(move) for move in extractor.moves] == moves_reference)
         self.assertTrue(extractor.comments == comments_reference)
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
@@ -320,7 +320,7 @@ class TestPgnExtraction(unittest.TestCase):
             (0, 0, 2),
             (0, 0, 21),
         ]
-        self.assertTrue(extractor.moves == moves_reference)
+        self.assertTrue([str(move) for move in extractor.moves] == moves_reference)
         self.assertTrue(extractor.comments == comments_reference)
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
@@ -430,8 +430,12 @@ class TestPgnExtraction(unittest.TestCase):
             ],
         ]
 
-        self.assertTrue(extractor[0].moves == moves_reference[0])
-        self.assertTrue(extractor[1].moves == moves_reference[1])
+        self.assertTrue(
+            [str(move) for move in extractor[0].moves] == moves_reference[0]
+        )
+        self.assertTrue(
+            [str(move) for move in extractor[1].moves] == moves_reference[1]
+        )
         self.assertTrue(extractor[0].position_status.is_checkmate)
         self.assertFalse(extractor[0].position_status.is_stalemate)
         self.assertTrue(extractor[0].position_status.is_game_over)
