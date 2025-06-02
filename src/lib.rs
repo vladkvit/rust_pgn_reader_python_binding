@@ -385,6 +385,8 @@ fn _parse_games_from_arrow_chunks_native(
 }
 
 // --- Python-facing wrappers (PyResult) ---
+// TODO check if I can call py.allow_threads and release GIL
+// see https://docs.rs/pyo3-arrow/0.10.1/pyo3_arrow/
 #[pyfunction]
 /// Parses a single PGN game string.
 fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
