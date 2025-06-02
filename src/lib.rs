@@ -339,7 +339,6 @@ pub fn parse_multiple_games_native(
     })
 }
 
-// --- Native Rust versions (no PyResult) --- (Continued)
 fn _parse_games_from_arrow_chunks_native(
     pgn_chunked_array: &PyChunkedArray,
     num_threads: Option<usize>,
