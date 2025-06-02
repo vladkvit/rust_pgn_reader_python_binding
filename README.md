@@ -2,8 +2,11 @@
 ## Fast PGN parsing bindings for Python
 This project adds Python bindings to [rust-pgn-reader](https://github.com/niklasf/rust-pgn-reader). In addition, it also parses and extracts [%clk ..] and [%eval ..] tags from comments.
 
+## Installing
+`pip install rust_pgn_reader_python_binding`
+
 ## Benchmarks
-Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games).
+Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games) on an 7800X3D.
 
 | Parser                                                                     | File format | Time   |
 |----------------------------------------------------------------------------|-------------|--------|
@@ -15,6 +18,8 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games).
 | [python-chess](https://github.com/niklasf/python-chess)                    | PGN         | 3+ min |
 
 The main reason for rust_pgn_reader_python_binding being slower (at least in single threaded mode) than rust-pgn-reader is because of vector / string allocations (that show up as malloc's and free's in profiling).
+
+To replicate, download `2013-07-train-00000-of-00001.parquet` and then run `python bench_parquet_parallel.py`
 
 ## Building
 `maturin develop`
