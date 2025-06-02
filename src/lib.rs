@@ -1,5 +1,4 @@
-use crate::comment_parsing::parse_comments;
-use crate::comment_parsing::CommentContent;
+use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
 use arrow_array::{Array, LargeStringArray, StringArray};
 use pgn_reader::{BufferedReader, RawComment, RawHeader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
@@ -253,25 +252,46 @@ impl Visitor for MoveExtractor {
                                 move_comments.push_str(&text);
                             }
                         }
-                        CommentContent::Eval(eval_value) => {
-                            if eval_encountered {
-                                eprintln!("Multiple Eval values found in comment: {:?}", _comment);
-                                return;
+                        CommentContent::Tag(tag_content) => match tag_content {
+                            ParsedTag::Eval(eval_value) => {
+                                if eval_encountered {
+                                    eprintln!(
+                                        "Multiple Eval values found in comment: {:?}",
+                                        _comment
+                                    );
+                                    // Potentially skip this eval or handle as an error
+                                    continue;
+                                }
+                                eval_encountered = true;
+                                self.evals.push(eval_value);
                             }
-                            eval_encountered = true;
-                            self.evals.push(eval_value);
-                        }
-                        CommentContent::ClkTime(clk_time) => {
-                            if clk_time_encountered {
-                                eprintln!(
-                                    "Multiple ClkTime values found in comment: {:?}",
-                                    _comment
-                                );
-                                return;
+                            ParsedTag::Mate(mate_value) => {
+                                // For now, add mate info to the general comments string
+                                // A dedicated field could be added to MoveExtractor if needed
+                                if !move_comments.is_empty() && !move_comments.ends_with(' ') {
+                                    move_comments.push(' ');
+                                }
+                                move_comments.push_str(&format!("[Mate {}]", mate_value));
+                                // If evals should also store mate, convert mate_value to f64
+                                // e.g., self.evals.push(mate_value as f64 * 1000.0); // Or some indicator
                             }
-                            clk_time_encountered = true;
-                            self.clock_times.push(clk_time);
-                        }
+                            ParsedTag::ClkTime {
+                                hours,
+                                minutes,
+                                seconds,
+                            } => {
+                                if clk_time_encountered {
+                                    eprintln!(
+                                        "Multiple ClkTime values found in comment: {:?}",
+                                        _comment
+                                    );
+                                    // Potentially skip this clk or handle as an error
+                                    continue;
+                                }
+                                clk_time_encountered = true;
+                                self.clock_times.push((hours, minutes, seconds));
+                            }
+                        },
                     }
                 }
                 self.comments.push(move_comments);
