@@ -24,7 +24,7 @@ To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 
 `python bench_parquet_parallel.py` (multithreaded parse_games)
 
-`python bench_parquet_arrow.py` (multithreaded parse_games)
+`python bench_parquet_arrow.py` (multithreaded parse_game_moves_arrow_chunked_array)
 
 ## Building
 `maturin develop`
