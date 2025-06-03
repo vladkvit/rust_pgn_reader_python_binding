@@ -14,15 +14,21 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459	games) on an
 | rust_pgn_reader_python_binding                                             | PGN         | 4.7s   |
 | rust_pgn_reader_python_binding, parse_game (single_threaded)               | parquet     | 3.3s   |
 | rust_pgn_reader_python_binding, parse_games (multithreaded)                | parquet     | 0.5s   |
+| rust_pgn_reader_python_binding, parse_game_moves_arrow_chunked_array (multithreaded) | parquet     | 0.35s   |
 | [chess-library](https://github.com/Disservin/chess-library)                | PGN         | 2s     |
 | [python-chess](https://github.com/niklasf/python-chess)                    | PGN         | 3+ min |
 
-The main reason for rust_pgn_reader_python_binding being slower (at least in single threaded mode) than rust-pgn-reader is because of vector / string allocations (that show up as malloc's and free's in profiling).
+To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 
-To replicate, download `2013-07-train-00000-of-00001.parquet` and then run `python bench_parquet_parallel.py`
+`python bench_parquet.py` (single-threaded parse_game)
+
+`python bench_parquet_parallel.py` (multithreaded parse_games)
+
+`python bench_parquet_arrow.py` (multithreaded parse_games)
 
 ## Building
 `maturin develop`
+
 `maturin develop --release`
 
 For a more thorough tutorial, follow https://lukesalamone.github.io/posts/how-to-create-rust-python-bindings/
@@ -35,4 +41,5 @@ Linux/WSL-only:
 
 ## Testing
 `cargo test`
+
 `python -m unittest src/test.py`
