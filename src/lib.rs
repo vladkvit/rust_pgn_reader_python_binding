@@ -6,7 +6,7 @@ use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use shakmaty::Color;
-use shakmaty::{uci::UciMove, Chess, Outcome, Position, Square};
+use shakmaty::{uci::UciMove, Chess, Outcome, Position, Role, Square};
 use std::io::Cursor;
 
 mod comment_parsing;
@@ -17,13 +17,13 @@ mod comment_parsing;
 pub struct PyUciMove {
     pub from_square: u8,
     pub to_square: u8,
-    pub promotion: Option<char>,
+    pub promotion: Option<u8>,
 }
 
 #[pymethods]
 impl PyUciMove {
     #[new]
-    fn new(from_square: u8, to_square: u8, promotion: Option<char>) -> Self {
+    fn new(from_square: u8, to_square: u8, promotion: Option<u8>) -> Self {
         PyUciMove {
             from_square,
             to_square,
@@ -41,24 +41,42 @@ impl PyUciMove {
         Square::new(self.to_square as u32).to_string()
     }
 
+    #[getter]
+    fn get_promotion_name(&self) -> Option<String> {
+        self.promotion.and_then(|p_u8| {
+            Role::try_from(p_u8)
+                .map(|role| format!("{:?}", role)) // Get the debug representation (e.g., "Queen")
+                .ok()
+        })
+    }
+
     // __str__ method for Python representation
     fn __str__(&self) -> String {
-        let promo_char = self.promotion.map_or("".to_string(), |p| p.to_string());
+        let promo_str = self.promotion.map_or("".to_string(), |p_u8| {
+            Role::try_from(p_u8)
+                .map(|role| role.char().to_string())
+                .unwrap_or_else(|_| "".to_string()) // Handle potential error if u8 is not a valid Role
+        });
         format!(
             "{}{}{}",
             Square::new(self.from_square as u32),
             Square::new(self.to_square as u32),
-            promo_char
+            promo_str
         )
     }
 
     // __repr__ for a more developer-friendly representation
     fn __repr__(&self) -> String {
+        let promo_repr = self.promotion.map_or("None".to_string(), |p_u8| {
+            Role::try_from(p_u8)
+                .map(|role| format!("Some('{}')", role.char()))
+                .unwrap_or_else(|_| format!("Some(InvalidRole({}))", p_u8))
+        });
         format!(
-            "PyUciMove(from_square={}, to_square={}, promotion={:?})",
+            "PyUciMove(from_square={}, to_square={}, promotion={})",
             Square::new(self.from_square as u32),
             Square::new(self.to_square as u32),
-            self.promotion
+            promo_repr
         )
     }
 }
@@ -211,7 +229,7 @@ impl Visitor for MoveExtractor {
                             let py_uci_move = PyUciMove {
                                 from_square: from as u8,
                                 to_square: to as u8,
-                                promotion: promo_opt.map(|p| p.char()),
+                                promotion: promo_opt.map(|p_role| p_role as u8),
                             };
                             self.moves.push(py_uci_move);
                             self.push_castling_bitboards();
@@ -440,4 +458,75 @@ fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PositionStatus>()?;
     m.add_class::<PyUciMove>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod pyucimove_tests {
+    use super::*;
+    use shakmaty::{Role, Square};
+
+    #[test]
+    fn test_py_uci_move_no_promotion() {
+        let uci_move = PyUciMove::new(Square::E2 as u8, Square::E4 as u8, None);
+        assert_eq!(uci_move.from_square, Square::E2 as u8);
+        assert_eq!(uci_move.to_square, Square::E4 as u8);
+        assert_eq!(uci_move.promotion, None);
+        assert_eq!(uci_move.get_from_square_name(), "e2");
+        assert_eq!(uci_move.get_to_square_name(), "e4");
+        assert_eq!(uci_move.get_promotion_name(), None);
+        assert_eq!(uci_move.__str__(), "e2e4");
+        assert_eq!(
+            uci_move.__repr__(),
+            "PyUciMove(from_square=e2, to_square=e4, promotion=None)"
+        );
+    }
+
+    #[test]
+    fn test_py_uci_move_with_queen_promotion() {
+        let uci_move = PyUciMove::new(Square::E7 as u8, Square::E8 as u8, Some(Role::Queen as u8));
+        assert_eq!(uci_move.from_square, Square::E7 as u8);
+        assert_eq!(uci_move.to_square, Square::E8 as u8);
+        assert_eq!(uci_move.promotion, Some(Role::Queen as u8));
+        assert_eq!(uci_move.get_from_square_name(), "e7");
+        assert_eq!(uci_move.get_to_square_name(), "e8");
+        assert_eq!(uci_move.get_promotion_name(), Some("Queen".to_string()));
+        assert_eq!(uci_move.__str__(), "e7e8q");
+        assert_eq!(
+            uci_move.__repr__(),
+            "PyUciMove(from_square=e7, to_square=e8, promotion=Some('q'))"
+        );
+    }
+
+    #[test]
+    fn test_py_uci_move_with_rook_promotion() {
+        let uci_move = PyUciMove::new(Square::A7 as u8, Square::A8 as u8, Some(Role::Rook as u8));
+        assert_eq!(uci_move.from_square, Square::A7 as u8);
+        assert_eq!(uci_move.to_square, Square::A8 as u8);
+        assert_eq!(uci_move.promotion, Some(Role::Rook as u8));
+        assert_eq!(uci_move.get_from_square_name(), "a7");
+        assert_eq!(uci_move.get_to_square_name(), "a8");
+        assert_eq!(uci_move.get_promotion_name(), Some("Rook".to_string()));
+        assert_eq!(uci_move.__str__(), "a7a8r");
+        assert_eq!(
+            uci_move.__repr__(),
+            "PyUciMove(from_square=a7, to_square=a8, promotion=Some('r'))"
+        );
+    }
+
+    #[test]
+    fn test_py_uci_move_invalid_promotion_val() {
+        // Test with a u8 value that doesn't correspond to a valid Role
+        let uci_move = PyUciMove::new(Square::B7 as u8, Square::B8 as u8, Some(99)); // 99 is not a valid Role
+        assert_eq!(uci_move.from_square, Square::B7 as u8);
+        assert_eq!(uci_move.to_square, Square::B8 as u8);
+        assert_eq!(uci_move.promotion, Some(99));
+        assert_eq!(uci_move.get_from_square_name(), "b7");
+        assert_eq!(uci_move.get_to_square_name(), "b8");
+        assert_eq!(uci_move.get_promotion_name(), None); // Should be None as 99 is invalid
+        assert_eq!(uci_move.__str__(), "b7b8"); // Should produce no promotion char
+        assert_eq!(
+            uci_move.__repr__(),
+            "PyUciMove(from_square=b7, to_square=b8, promotion=Some(InvalidRole(99)))"
+        );
+    }
 }
