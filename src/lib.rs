@@ -112,6 +112,9 @@ pub struct MoveExtractor {
     moves: Vec<PyUciMove>,
 
     #[pyo3(get)]
+    legal_moves: Vec<Vec<PyUciMove>>,
+
+    #[pyo3(get)]
     valid_moves: bool,
 
     #[pyo3(get)]
@@ -144,6 +147,7 @@ impl MoveExtractor {
     fn new() -> MoveExtractor {
         MoveExtractor {
             moves: Vec::with_capacity(100),
+            legal_moves: Vec::with_capacity(100),
             pos: Chess::default(),
             valid_moves: true,
             comments: Vec::with_capacity(100),
@@ -219,6 +223,7 @@ impl Visitor for MoveExtractor {
     fn begin_movetext(&mut self, tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
         self.headers = tags;
         self.moves.clear();
+        self.legal_moves.clear();
         self.pos = Chess::default();
         self.valid_moves = true;
         self.comments.clear();
