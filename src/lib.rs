@@ -179,6 +179,36 @@ impl MoveExtractor {
         self.castling_rights.push(Some(castling_rights));
     }
 
+    fn push_legal_moves(&mut self) {
+        let legal_moves_for_pos = self.pos.legal_moves();
+        let mut uci_moves_for_pos: Vec<PyUciMove> = Vec::with_capacity(legal_moves_for_pos.len());
+
+        for m in legal_moves_for_pos {
+            let uci_move_obj = UciMove::from_standard(m);
+            match uci_move_obj {
+                UciMove::Normal {
+                    from,
+                    to,
+                    promotion: promo_opt,
+                } => {
+                    let py_uci_move = PyUciMove {
+                        from_square: from as u8,
+                        to_square: to as u8,
+                        promotion: promo_opt.map(|p_role| p_role as u8),
+                    };
+                    uci_moves_for_pos.push(py_uci_move);
+                }
+                _ => {
+                    eprintln!(
+                        "Unexpected UCI move type from standard PGN move: {:?}. Game moves might be invalid.",
+                        uci_move_obj
+                    );
+                }
+            }
+        }
+        self.legal_moves.push(uci_moves_for_pos);
+    }
+
     fn update_position_status(&mut self) {
         // TODO this checks legal_moves() a bunch of times
         self.position_status = Some(PositionStatus {
@@ -232,6 +262,7 @@ impl Visitor for MoveExtractor {
         self.castling_rights.clear();
 
         self.push_castling_bitboards();
+        self.push_legal_moves();
         ControlFlow::Continue(())
     }
 
@@ -246,6 +277,7 @@ impl Visitor for MoveExtractor {
             match san_plus.san.to_move(&self.pos) {
                 Ok(m) => {
                     self.pos.play_unchecked(m);
+                    self.push_legal_moves();
                     let uci_move_obj = UciMove::from_standard(m);
 
                     match uci_move_obj {
