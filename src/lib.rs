@@ -277,8 +277,7 @@ impl Visitor for MoveExtractor {
         _movetext: &mut Self::Movetext,
         _comment: RawComment<'_>,
     ) -> ControlFlow<Self::Output> {
-        let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
-        match parse_comments(&comment) {
+        match parse_comments(_comment.as_bytes()) {
             Ok((remaining_input, parsed_comments)) => {
                 if !remaining_input.is_empty() {
                     eprintln!("Unparsed remaining input: {:?}", remaining_input);
@@ -292,7 +291,7 @@ impl Visitor for MoveExtractor {
                     match content {
                         CommentContent::Text(text) => {
                             if !text.trim().is_empty() {
-                                move_comments.push_str(text);
+                                move_comments.push_str(&text);
                             }
                         }
                         CommentContent::Tag(tag_content) => match tag_content {
