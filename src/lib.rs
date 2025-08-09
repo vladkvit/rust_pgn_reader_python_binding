@@ -1,13 +1,14 @@
 use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
 use arrow_array::{Array, LargeStringArray, StringArray};
-use pgn_reader::{BufferedReader, RawComment, RawHeader, SanPlus, Skip, Visitor};
+use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use shakmaty::Color;
-use shakmaty::{uci::UciMove, Chess, Outcome, Position, Role, Square};
+use shakmaty::{uci::UciMove, Chess, Position, Role, Square};
 use std::io::Cursor;
+use std::ops::ControlFlow;
 
 mod comment_parsing;
 
@@ -194,15 +195,29 @@ impl MoveExtractor {
 }
 
 impl Visitor for MoveExtractor {
-    type Result = bool;
+    type Tags = Vec<(String, String)>;
+    type Movetext = ();
+    type Output = bool;
 
-    fn header(&mut self, key: &[u8], value: RawHeader<'_>) {
-        let key_str = String::from_utf8_lossy(key).into_owned();
-        let value_str = String::from_utf8_lossy(value.as_bytes()).into_owned();
-        self.headers.push((key_str, value_str));
+    fn begin_tags(&mut self) -> ControlFlow<Self::Output, Self::Tags> {
+        self.headers.clear();
+        ControlFlow::Continue(Vec::with_capacity(10))
     }
 
-    fn begin_game(&mut self) {
+    fn tag(
+        &mut self,
+        tags: &mut Self::Tags,
+        key: &[u8],
+        value: RawTag<'_>,
+    ) -> ControlFlow<Self::Output> {
+        let key_str = String::from_utf8_lossy(key).into_owned();
+        let value_str = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        tags.push((key_str, value_str));
+        ControlFlow::Continue(())
+    }
+
+    fn begin_movetext(&mut self, tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
+        self.headers = tags;
         self.moves.clear();
         self.pos = Chess::default();
         self.valid_moves = true;
@@ -211,14 +226,19 @@ impl Visitor for MoveExtractor {
         self.clock_times.clear();
 
         self.push_castling_bitboards();
+        ControlFlow::Continue(())
     }
 
-    fn san(&mut self, san_plus: SanPlus) {
+    fn san(
+        &mut self,
+        _movetext: &mut Self::Movetext,
+        san_plus: SanPlus,
+    ) -> ControlFlow<Self::Output> {
         if self.valid_moves {
             match san_plus.san.to_move(&self.pos) {
                 Ok(m) => {
-                    self.pos.play_unchecked(&m);
-                    let uci_move_obj = UciMove::from_standard(&m);
+                    self.pos.play_unchecked(m);
+                    let uci_move_obj = UciMove::from_standard(m);
 
                     match uci_move_obj {
                         UciMove::Normal {
@@ -249,15 +269,20 @@ impl Visitor for MoveExtractor {
                 }
             }
         }
+        ControlFlow::Continue(())
     }
 
-    fn comment(&mut self, _comment: RawComment<'_>) {
+    fn comment(
+        &mut self,
+        _movetext: &mut Self::Movetext,
+        _comment: RawComment<'_>,
+    ) -> ControlFlow<Self::Output> {
         let comment = String::from_utf8_lossy(_comment.as_bytes()).into_owned();
         match parse_comments(&comment) {
             Ok((remaining_input, parsed_comments)) => {
                 if !remaining_input.is_empty() {
                     eprintln!("Unparsed remaining input: {:?}", remaining_input);
-                    return;
+                    return ControlFlow::Continue(());
                 }
                 let mut eval_encountered = false;
                 let mut clk_time_encountered = false;
@@ -318,28 +343,40 @@ impl Visitor for MoveExtractor {
                 eprintln!("Error parsing comment: {:?}", e);
             }
         }
+        ControlFlow::Continue(())
     }
 
-    fn begin_variation(&mut self) -> Skip {
-        Skip(true) // stay in the mainline
+    fn begin_variation(
+        &mut self,
+        _movetext: &mut Self::Movetext,
+    ) -> ControlFlow<Self::Output, Skip> {
+        ControlFlow::Continue(Skip(true)) // stay in the mainline
     }
 
-    fn outcome(&mut self, _outcome: Option<Outcome>) {
-        self.outcome = _outcome.map(|o| match o {
-            Outcome::Decisive { winner } => format!("{:?}", winner),
-            Outcome::Draw => "Draw".to_string(),
+    fn outcome(
+        &mut self,
+        _movetext: &mut Self::Movetext,
+        _outcome: Outcome,
+    ) -> ControlFlow<Self::Output> {
+        self.outcome = Some(match _outcome {
+            Outcome::Known(known) => match known {
+                KnownOutcome::Decisive { winner } => format!("{:?}", winner),
+                KnownOutcome::Draw => "Draw".to_string(),
+            },
+            Outcome::Unknown => "Unknown".to_string(),
         });
         self.update_position_status();
+        ControlFlow::Continue(())
     }
 
-    fn end_game(&mut self) -> Self::Result {
+    fn end_game(&mut self, _movetext: Self::Movetext) -> Self::Output {
         self.valid_moves
     }
 }
 
 // --- Native Rust versions (no PyResult) ---
 pub fn parse_single_game_native(pgn: &str) -> Result<MoveExtractor, String> {
-    let mut reader = BufferedReader::new(Cursor::new(pgn));
+    let mut reader = Reader::new(Cursor::new(pgn));
     let mut extractor = MoveExtractor::new();
     match reader.read_game(&mut extractor) {
         Ok(Some(_)) => Ok(extractor),
@@ -434,8 +471,7 @@ fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
 #[pyfunction]
 #[pyo3(signature = (pgns, num_threads=None))]
 fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<MoveExtractor>> {
-    parse_multiple_games_native(&pgns, num_threads)
-        .map_err(pyo3::exceptions::PyValueError::new_err)
+    parse_multiple_games_native(&pgns, num_threads).map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 #[pyfunction]
