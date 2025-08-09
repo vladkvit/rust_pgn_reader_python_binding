@@ -292,7 +292,7 @@ impl Visitor for MoveExtractor {
                     match content {
                         CommentContent::Text(text) => {
                             if !text.trim().is_empty() {
-                                move_comments.push_str(&text);
+                                move_comments.push_str(text);
                             }
                         }
                         CommentContent::Tag(tag_content) => match tag_content {

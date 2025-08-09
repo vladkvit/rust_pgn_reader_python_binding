@@ -20,8 +20,8 @@ pub enum ParsedTag {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum CommentContent {
-    Text(String),
+pub enum CommentContent<'a> {
+    Text(&'a str),
     Tag(ParsedTag),
 }
 
@@ -32,7 +32,7 @@ pub fn parse_comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
         // If not a known tag, but looks like a tag (e.g. [%unknown ...]), parse as text
         map(
             recognize(delimited(tag("[%"), is_not("]"), char(']'))),
-            |s: &str| CommentContent::Text(s.to_string()),
+            |s: &str| CommentContent::Text(s),
         ),
         // Otherwise, parse as regular text content. This must not be empty.
         map(
@@ -41,7 +41,7 @@ pub fn parse_comments(input: &str) -> IResult<&str, Vec<CommentContent>> {
                 // Takes a '[' if it's NOT followed by '%' (to allow "[abc]" as text)
                 recognize(preceded(char('['), peek(not(char('%'))))),
             )))),
-            |s: &str| CommentContent::Text(s.to_string()),
+            |s: &str| CommentContent::Text(s),
         ),
     )))
     .parse(input)
@@ -155,7 +155,7 @@ mod tests {
             parsed,
             vec![
                 CommentContent::Tag(ParsedTag::Eval(123.0)),
-                CommentContent::Text(" some text ".to_string()),
+                CommentContent::Text(" some text "),
                 CommentContent::Tag(ParsedTag::ClkTime {
                     hours: 12,
                     minutes: 34,
@@ -180,7 +180,7 @@ mod tests {
                     minutes: 34,
                     seconds: 56.0
                 }),
-                CommentContent::Text(" some text ".to_string())
+                CommentContent::Text(" some text ")
             ]
         );
         assert_eq!(remaining, "");
@@ -410,8 +410,8 @@ mod tests {
             parsed,
             vec![
                 // The whole unknown tag becomes a text element
-                CommentContent::Text("[%timestamp 12345]".to_string()),
-                CommentContent::Text(" some text".to_string()) // Note: leading space is part of the text
+                CommentContent::Text("[%timestamp 12345]"),
+                CommentContent::Text(" some text") // Note: leading space is part of the text
             ]
         );
         assert_eq!(remaining, "");
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(
             parsed,
             vec![
-                CommentContent::Text("Text with [normal brackets] and then ".to_string()),
+                CommentContent::Text("Text with [normal brackets] and then "),
                 CommentContent::Tag(ParsedTag::ClkTime {
                     hours: 1,
                     minutes: 2,
