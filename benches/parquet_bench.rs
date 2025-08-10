@@ -1,15 +1,8 @@
 use arrow::array::{Array, StringArray};
-
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-
-// use parquet::file::reader::{FileReader, SerializedFileReader};
-// use parquet::record::RowAccessor;
-
 use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
-
-// use criterion::{criterion_group, criterion_main, Criterion};
 
 use rust_pgn_reader_python_binding::parse_multiple_games_native;
 
