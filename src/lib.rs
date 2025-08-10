@@ -1,12 +1,12 @@
-use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
+use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
 use arrow_array::{Array, LargeStringArray, StringArray};
 use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use shakmaty::Color;
-use shakmaty::{uci::UciMove, Chess, Position, Role, Square};
+use shakmaty::{Chess, Position, Role, Square, uci::UciMove};
 use std::io::Cursor;
 use std::ops::ControlFlow;
 
@@ -115,13 +115,13 @@ pub struct MoveExtractor {
     valid_moves: bool,
 
     #[pyo3(get)]
-    comments: Vec<String>,
+    comments: Vec<Option<String>>,
 
     #[pyo3(get)]
-    evals: Vec<f64>,
+    evals: Vec<Option<f64>>,
 
     #[pyo3(get)]
-    clock_times: Vec<(u32, u8, f64)>,
+    clock_times: Vec<Option<(u32, u8, f64)>>,
 
     #[pyo3(get)]
     outcome: Option<String>,
@@ -130,7 +130,7 @@ pub struct MoveExtractor {
     headers: Vec<(String, String)>,
 
     #[pyo3(get)]
-    castling_rights: Vec<(bool, bool, bool, bool)>,
+    castling_rights: Vec<Option<(bool, bool, bool, bool)>>,
 
     #[pyo3(get)]
     position_status: Option<PositionStatus>,
@@ -172,7 +172,7 @@ impl MoveExtractor {
             castling_bitboard.contains(shakmaty::Square::H8),
         );
 
-        self.castling_rights.push(castling_rights);
+        self.castling_rights.push(Some(castling_rights));
     }
 
     fn update_position_status(&mut self) {
@@ -224,6 +224,7 @@ impl Visitor for MoveExtractor {
         self.comments.clear();
         self.evals.clear();
         self.clock_times.clear();
+        self.castling_rights.clear();
 
         self.push_castling_bitboards();
         ControlFlow::Continue(())
@@ -253,12 +254,20 @@ impl Visitor for MoveExtractor {
                             };
                             self.moves.push(py_uci_move);
                             self.push_castling_bitboards();
+
+                            // Push placeholders to keep vectors in sync
+                            self.comments.push(None);
+                            self.evals.push(None);
+                            self.clock_times.push(None);
                         }
                         _ => {
                             // This case handles UciMove::Put and UciMove::Null,
                             // which are not expected from standard PGN moves
                             // that PyUciMove is designed to represent.
-                            eprintln!("Unexpected UCI move type from standard PGN move: {:?}. Game moves might be invalid.", uci_move_obj);
+                            eprintln!(
+                                "Unexpected UCI move type from standard PGN move: {:?}. Game moves might be invalid.",
+                                uci_move_obj
+                            );
                             self.valid_moves = false;
                         }
                     }
@@ -283,60 +292,47 @@ impl Visitor for MoveExtractor {
                     eprintln!("Unparsed remaining input: {:?}", remaining_input);
                     return ControlFlow::Continue(());
                 }
-                let mut eval_encountered = false;
-                let mut clk_time_encountered = false;
+
                 let mut move_comments = String::new();
 
                 for content in parsed_comments {
                     match content {
                         CommentContent::Text(text) => {
                             if !text.trim().is_empty() {
+                                if !move_comments.is_empty() {
+                                    move_comments.push(' ');
+                                }
                                 move_comments.push_str(&text);
                             }
                         }
                         CommentContent::Tag(tag_content) => match tag_content {
                             ParsedTag::Eval(eval_value) => {
-                                if eval_encountered {
-                                    eprintln!(
-                                        "Multiple Eval values found in comment: {:?}",
-                                        _comment
-                                    );
-                                    // Potentially skip this eval or handle as an error
-                                    continue;
+                                if let Some(last_eval) = self.evals.last_mut() {
+                                    *last_eval = Some(eval_value);
                                 }
-                                eval_encountered = true;
-                                self.evals.push(eval_value);
                             }
                             ParsedTag::Mate(mate_value) => {
-                                // For now, add mate info to the general comments string
-                                // A dedicated field could be added to MoveExtractor if needed
                                 if !move_comments.is_empty() && !move_comments.ends_with(' ') {
                                     move_comments.push(' ');
                                 }
                                 move_comments.push_str(&format!("[Mate {}]", mate_value));
-                                // If evals should also store mate, convert mate_value to f64
-                                // e.g., self.evals.push(mate_value as f64 * 1000.0); // Or some indicator
                             }
                             ParsedTag::ClkTime {
                                 hours,
                                 minutes,
                                 seconds,
                             } => {
-                                if clk_time_encountered {
-                                    eprintln!(
-                                        "Multiple ClkTime values found in comment: {:?}",
-                                        _comment
-                                    );
-                                    // Potentially skip this clk or handle as an error
-                                    continue;
+                                if let Some(last_clk) = self.clock_times.last_mut() {
+                                    *last_clk = Some((hours, minutes, seconds));
                                 }
-                                clk_time_encountered = true;
-                                self.clock_times.push((hours, minutes, seconds));
                             }
                         },
                     }
                 }
-                self.comments.push(move_comments);
+
+                if let Some(last_comment) = self.comments.last_mut() {
+                    *last_comment = Some(move_comments);
+                }
             }
             Err(e) => {
                 eprintln!("Error parsing comment: {:?}", e);

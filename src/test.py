@@ -78,10 +78,20 @@ class TestPgnExtraction(unittest.TestCase):
             "f5f8",
             "h8h7",
         ]
-        comments_reference = ["asdf", "hello"]
+
+        comments_reference = [
+            "asdf",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "hello",
+        ] + [None for _ in range(57)]
+
         valid_reference = True
-        evals_reference = []
-        clock_times_reference = []
+        evals_reference = [None for _ in range(len(moves_reference))]
+        clock_times_reference = [None for _ in range(len(moves_reference))]
 
         self.assertTrue([str(move) for move in extractor.moves] == moves_reference)
         self.assertTrue(extractor.comments == comments_reference)
@@ -183,10 +193,10 @@ class TestPgnExtraction(unittest.TestCase):
             "a4a5",
             "b3d5",
         ]
-        comments_reference = []
+        comments_reference = [None for _ in range(len(moves_reference))]
         valid_reference = True
-        evals_reference = []
-        clock_times_reference = []
+        evals_reference = [None for _ in range(len(moves_reference))]
+        clock_times_reference = [None for _ in range(len(moves_reference))]
         headers_reference = [
             ("Event", "Rated Classical game"),
             ("Site", "https://lichess.org/lhy6ehiv"),
@@ -211,6 +221,8 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
         self.assertTrue(extractor.headers == headers_reference)
+
+        assert extractor.position_status is not None  # appease the type checker
         self.assertFalse(extractor.position_status.is_checkmate)
         self.assertFalse(extractor.position_status.is_stalemate)
         self.assertFalse(extractor.position_status.is_game_over)
@@ -337,11 +349,6 @@ class TestPgnExtraction(unittest.TestCase):
         ]
         extractor = rust_pgn_reader_python_binding.parse_games(pgns)
 
-        comments_reference = [[], ["asdf", "hello"]]
-
-        self.assertTrue(extractor[0].comments == comments_reference[0])
-        self.assertTrue(extractor[1].comments == comments_reference[1])
-
         moves_reference = [
             [
                 "g1f3",
@@ -431,12 +438,37 @@ class TestPgnExtraction(unittest.TestCase):
             ],
         ]
 
+        comments_reference = [
+            [None for _ in range(len(moves_reference[0]))],
+            [
+                "asdf",
+                None,
+                None,
+                None,
+                None,
+                None,
+                "hello",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+        ]
+
+        self.assertTrue(extractor[0].comments == comments_reference[0])
+        self.assertTrue(extractor[1].comments == comments_reference[1])
+
         self.assertTrue(
             [str(move) for move in extractor[0].moves] == moves_reference[0]
         )
         self.assertTrue(
             [str(move) for move in extractor[1].moves] == moves_reference[1]
         )
+        assert extractor[0].position_status is not None  # appease the type checker
+
         self.assertTrue(extractor[0].position_status.is_checkmate)
         self.assertFalse(extractor[0].position_status.is_stalemate)
         self.assertTrue(extractor[0].position_status.is_game_over)
@@ -446,6 +478,7 @@ class TestPgnExtraction(unittest.TestCase):
 
         self.assertTrue(extractor[1].position_status is None)
         extractor[1].update_position_status()
+        assert extractor[1].position_status is not None  # appease the type checker
         self.assertFalse(extractor[1].position_status.is_checkmate)
         self.assertFalse(extractor[1].position_status.is_stalemate)
         self.assertFalse(extractor[1].position_status.is_game_over)
@@ -495,11 +528,6 @@ class TestPgnExtraction(unittest.TestCase):
                 chunked_array
             )
         )
-
-        comments_reference = [[], ["asdf", "hello"]]
-
-        self.assertTrue(extractors[0].comments == comments_reference[0])
-        self.assertTrue(extractors[1].comments == comments_reference[1])
 
         moves_reference = [
             [
@@ -597,7 +625,31 @@ class TestPgnExtraction(unittest.TestCase):
             [str(move) for move in extractors[1].moves] == moves_reference[1]
         )
 
+        comments_reference = [
+            [None for _ in range(len(moves_reference[0]))],
+            [
+                "asdf",
+                None,
+                None,
+                None,
+                None,
+                None,
+                "hello",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+        ]
+
+        self.assertTrue(extractors[0].comments == comments_reference[0])
+        self.assertTrue(extractors[1].comments == comments_reference[1])
+
         extractors[0].update_position_status()  # Ensure status is calculated
+        assert extractors[0].position_status is not None  # appease the type checker
         self.assertTrue(extractors[0].position_status.is_checkmate)
         self.assertFalse(extractors[0].position_status.is_stalemate)
         self.assertTrue(extractors[0].position_status.is_game_over)
@@ -613,6 +665,7 @@ class TestPgnExtraction(unittest.TestCase):
             extractors[1].position_status is None
         )  # Not set by default for parse_game_moves_arrow_chunked_array
         extractors[1].update_position_status()
+        assert extractors[1].position_status is not None  # appease the type checker
         self.assertFalse(extractors[1].position_status.is_checkmate)
         self.assertFalse(extractors[1].position_status.is_stalemate)
         self.assertFalse(extractors[1].position_status.is_game_over)
