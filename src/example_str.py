@@ -24,6 +24,7 @@ print(extractor.valid_moves)
 print(extractor.evals)
 print(extractor.clock_times)
 print(extractor.outcome)
+assert extractor.position_status is not None
 print(extractor.position_status.is_checkmate)
 print(extractor.position_status.is_stalemate)
 print(extractor.position_status.is_game_over)
