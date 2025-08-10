@@ -32,11 +32,11 @@ fn as_str(bytes: &[u8]) -> Result<&str, std::str::Utf8Error> {
     std::str::from_utf8(bytes)
 }
 
-fn to_cow_str(bytes: &[u8]) -> CommentContent {
+fn to_cow_str(bytes: &[u8]) -> CommentContent<'_> {
     CommentContent::Text(String::from_utf8_lossy(bytes))
 }
 
-pub fn parse_comments(input: &[u8]) -> IResult<&[u8], Vec<CommentContent>> {
+pub fn parse_comments(input: &[u8]) -> IResult<&[u8], Vec<CommentContent<'_>>> {
     many0(alt((
         // Attempt to parse a known structured tag first
         map(parse_structured_tag, CommentContent::Tag),
