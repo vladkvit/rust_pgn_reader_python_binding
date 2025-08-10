@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use roaring::RoaringBitmap;
 use shakmaty::Color;
 use shakmaty::{uci::UciMove, Chess, Position, Role, Square};
 use std::io::Cursor;
@@ -111,7 +112,7 @@ pub struct MoveExtractor {
     #[pyo3(get)]
     moves: Vec<PyUciMove>,
 
-    legal_moves_arrays: Vec<[u8; 512]>,
+    legal_moves_arrays: Vec<RoaringBitmap>,
 
     #[pyo3(get)]
     valid_moves: bool,
@@ -179,7 +180,7 @@ impl MoveExtractor {
     }
 
     fn push_legal_moves(&mut self) {
-        let mut legal_moves_array = [0u8; 512];
+        let mut legal_moves_bitmap = RoaringBitmap::new();
         let legal_moves_for_pos = self.pos.legal_moves();
 
         for m in legal_moves_for_pos {
@@ -190,15 +191,13 @@ impl MoveExtractor {
                 promotion: _,
             } = uci_move_obj
             {
-                let from_idx = from as usize;
-                let to_idx = to as usize;
+                let from_idx = from as u32;
+                let to_idx = to as u32;
                 let index = from_idx * 64 + to_idx;
-                let byte_index = index / 8;
-                let bit_index = index % 8;
-                legal_moves_array[byte_index] |= 1 << bit_index;
+                legal_moves_bitmap.insert(index);
             }
         }
-        self.legal_moves_arrays.push(legal_moves_array);
+        self.legal_moves_arrays.push(legal_moves_bitmap);
     }
 
     fn update_position_status(&mut self) {
@@ -223,7 +222,11 @@ impl MoveExtractor {
     fn legal_moves(&self) -> Vec<Vec<u8>> {
         self.legal_moves_arrays
             .iter()
-            .map(|arr| arr.to_vec())
+            .map(|bitmap| {
+                let mut bytes = Vec::new();
+                bitmap.serialize_into(&mut bytes).unwrap();
+                bytes
+            })
             .collect()
     }
 }
