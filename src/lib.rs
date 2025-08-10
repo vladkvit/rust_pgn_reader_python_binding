@@ -111,8 +111,7 @@ pub struct MoveExtractor {
     #[pyo3(get)]
     moves: Vec<PyUciMove>,
 
-    flat_legal_moves: Vec<PyUciMove>,
-    legal_moves_offsets: Vec<usize>,
+    legal_moves_arrays: Vec<[u8; 512]>,
 
     #[pyo3(get)]
     valid_moves: bool,
@@ -147,8 +146,7 @@ impl MoveExtractor {
     fn new() -> MoveExtractor {
         MoveExtractor {
             moves: Vec::with_capacity(100),
-            flat_legal_moves: Vec::with_capacity(100 * 30), // Pre-allocate for moves
-            legal_moves_offsets: Vec::with_capacity(100),   // Pre-allocate for offsets
+            legal_moves_arrays: Vec::with_capacity(100),
             pos: Chess::default(),
             valid_moves: true,
             comments: Vec::with_capacity(100),
@@ -181,27 +179,26 @@ impl MoveExtractor {
     }
 
     fn push_legal_moves(&mut self) {
-        // Record the starting offset for the current position's legal moves.
-        self.legal_moves_offsets.push(self.flat_legal_moves.len());
-
+        let mut legal_moves_array = [0u8; 512];
         let legal_moves_for_pos = self.pos.legal_moves();
-        self.flat_legal_moves.reserve(legal_moves_for_pos.len());
 
         for m in legal_moves_for_pos {
             let uci_move_obj = UciMove::from_standard(m);
             if let UciMove::Normal {
                 from,
                 to,
-                promotion: promo_opt,
+                promotion: _,
             } = uci_move_obj
             {
-                self.flat_legal_moves.push(PyUciMove {
-                    from_square: from as u8,
-                    to_square: to as u8,
-                    promotion: promo_opt.map(|p_role| p_role as u8),
-                });
+                let from_idx = from as usize;
+                let to_idx = to as usize;
+                let index = from_idx * 64 + to_idx;
+                let byte_index = index / 8;
+                let bit_index = index % 8;
+                legal_moves_array[byte_index] |= 1 << bit_index;
             }
         }
+        self.legal_moves_arrays.push(legal_moves_array);
     }
 
     fn update_position_status(&mut self) {
@@ -223,24 +220,11 @@ impl MoveExtractor {
     }
 
     #[getter]
-    fn legal_moves(&self) -> Vec<Vec<PyUciMove>> {
-        let mut result = Vec::with_capacity(self.legal_moves_offsets.len());
-        if self.legal_moves_offsets.is_empty() {
-            return result;
-        }
-
-        for i in 0..self.legal_moves_offsets.len() - 1 {
-            let start = self.legal_moves_offsets[i];
-            let end = self.legal_moves_offsets[i + 1];
-            result.push(self.flat_legal_moves[start..end].to_vec());
-        }
-
-        // Handle the last chunk
-        if let Some(&start) = self.legal_moves_offsets.last() {
-            result.push(self.flat_legal_moves[start..].to_vec());
-        }
-
-        result
+    fn legal_moves(&self) -> Vec<Vec<u8>> {
+        self.legal_moves_arrays
+            .iter()
+            .map(|arr| arr.to_vec())
+            .collect()
     }
 }
 
@@ -269,8 +253,7 @@ impl Visitor for MoveExtractor {
     fn begin_movetext(&mut self, tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
         self.headers = tags;
         self.moves.clear();
-        self.flat_legal_moves.clear();
-        self.legal_moves_offsets.clear();
+        self.legal_moves_arrays.clear();
         self.pos = Chess::default();
         self.valid_moves = true;
         self.comments.clear();
