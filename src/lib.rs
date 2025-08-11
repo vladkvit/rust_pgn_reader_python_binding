@@ -230,12 +230,14 @@ impl Visitor for MoveExtractor {
         ControlFlow::Continue(())
     }
 
+    // Roughly half the time during parsing is spent here in san()
     fn san(
         &mut self,
         _movetext: &mut Self::Movetext,
         san_plus: SanPlus,
     ) -> ControlFlow<Self::Output> {
         if self.valid_moves {
+            // Most of the function time is spent calculating to_move()
             match san_plus.san.to_move(&self.pos) {
                 Ok(m) => {
                     self.pos.play_unchecked(m);
