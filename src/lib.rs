@@ -395,19 +395,9 @@ pub fn parse_multiple_games_native(
         .expect("Failed to build Rayon thread pool");
 
     thread_pool.install(|| {
-        let results: Vec<Result<MoveExtractor, String>> = pgns
-            .par_iter()
+        pgns.par_iter()
             .map(|pgn| parse_single_game_native(pgn))
-            .collect();
-
-        let mut extractors: Vec<MoveExtractor> = Vec::with_capacity(results.len());
-        for res in results {
-            match res {
-                Ok(extractor) => extractors.push(extractor),
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(extractors)
+            .collect()
     })
 }
 
