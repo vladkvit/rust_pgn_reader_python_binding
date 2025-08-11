@@ -28,3 +28,5 @@ arrow = "55"
 harness = false
 name = "parquet_bench"
 
+[profile.bench]
+debug = true
