@@ -43,7 +43,7 @@ pub fn bench_parquet() {
     // Measure start time
     let start = Instant::now();
 
-    let result = parse_multiple_games_native(&movetexts, None);
+    let result = parse_multiple_games_native(&movetexts, None, false);
 
     let duration = start.elapsed();
     println!("Time taken: {:?}", duration);
