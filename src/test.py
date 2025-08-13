@@ -98,6 +98,8 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
+
+        assert extractor.position_status is not None  # appease the type checker
         self.assertFalse(extractor.position_status.is_checkmate)
         self.assertFalse(extractor.position_status.is_stalemate)
         self.assertFalse(extractor.position_status.is_game_over)
@@ -338,6 +340,8 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(extractor.valid_moves == valid_reference)
         self.assertTrue(extractor.evals == evals_reference)
         self.assertTrue(extractor.clock_times == clock_times_reference)
+
+        assert extractor.position_status is not None  # appease the type checker
         self.assertFalse(extractor.position_status.is_checkmate)
         self.assertFalse(extractor.position_status.is_stalemate)
         self.assertFalse(extractor.position_status.is_game_over)

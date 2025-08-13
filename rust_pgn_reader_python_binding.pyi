@@ -29,16 +29,19 @@ class PositionStatus:
 class MoveExtractor:
     moves: List[PyUciMove]
     valid_moves: bool
-    comments: List[str]
-    evals: List[float]
-    clock_times: List[Tuple[int, int, float]]
+    comments: List[Optional[str]]
+    evals: List[Optional[float]]
+    clock_times: List[Optional[Tuple[int, int, float]]]
     outcome: Optional[str]
     headers: List[Tuple[str, str]]
-    castling_rights: List[Tuple[bool, bool, bool, bool]]
+    castling_rights: List[Optional[Tuple[bool, bool, bool, bool]]]
     position_status: Optional[PositionStatus]
 
     def __init__(self, store_legal_moves: bool = False) -> None: ...
     def turn(self) -> bool: ...
+    def update_position_status(self) -> None: ...
+    @property
+    def legal_moves(self) -> List[List[PyUciMove]]: ...
 
 def parse_game(pgn: str, store_legal_moves: bool = False) -> MoveExtractor: ...
 def parse_games(
