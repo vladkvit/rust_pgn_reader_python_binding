@@ -111,6 +111,7 @@ pub struct MoveExtractor {
     #[pyo3(get)]
     moves: Vec<PyUciMove>,
 
+    store_legal_moves: bool,
     flat_legal_moves: Vec<PyUciMove>,
     legal_moves_offsets: Vec<usize>,
 
@@ -144,11 +145,13 @@ pub struct MoveExtractor {
 #[pymethods]
 impl MoveExtractor {
     #[new]
-    fn new() -> MoveExtractor {
+    #[pyo3(signature = (store_legal_moves = false))]
+    fn new(store_legal_moves: bool) -> MoveExtractor {
         MoveExtractor {
             moves: Vec::with_capacity(100),
-            flat_legal_moves: Vec::with_capacity(100 * 30), // Pre-allocate for moves
-            legal_moves_offsets: Vec::with_capacity(100),   // Pre-allocate for offsets
+            store_legal_moves,
+            flat_legal_moves: Vec::with_capacity(if store_legal_moves { 100 * 30 } else { 0 }), // Pre-allocate for moves
+            legal_moves_offsets: Vec::with_capacity(if store_legal_moves { 100 } else { 0 }), // Pre-allocate for offsets
             pos: Chess::default(),
             valid_moves: true,
             comments: Vec::with_capacity(100),
@@ -279,7 +282,9 @@ impl Visitor for MoveExtractor {
         self.castling_rights.clear();
 
         self.push_castling_bitboards();
-        self.push_legal_moves();
+        if self.store_legal_moves {
+            self.push_legal_moves();
+        }
         ControlFlow::Continue(())
     }
 
@@ -294,7 +299,9 @@ impl Visitor for MoveExtractor {
             match san_plus.san.to_move(&self.pos) {
                 Ok(m) => {
                     self.pos.play_unchecked(m);
-                    self.push_legal_moves();
+                    if self.store_legal_moves {
+                        self.push_legal_moves();
+                    }
                     let uci_move_obj = UciMove::from_standard(m);
 
                     match uci_move_obj {
@@ -426,9 +433,12 @@ impl Visitor for MoveExtractor {
 }
 
 // --- Native Rust versions (no PyResult) ---
-pub fn parse_single_game_native(pgn: &str) -> Result<MoveExtractor, String> {
+pub fn parse_single_game_native(
+    pgn: &str,
+    store_legal_moves: bool,
+) -> Result<MoveExtractor, String> {
     let mut reader = Reader::new(Cursor::new(pgn));
-    let mut extractor = MoveExtractor::new();
+    let mut extractor = MoveExtractor::new(store_legal_moves);
     match reader.read_game(&mut extractor) {
         Ok(Some(_)) => Ok(extractor),
         Ok(None) => Err("No game found in PGN".to_string()),
@@ -439,6 +449,7 @@ pub fn parse_single_game_native(pgn: &str) -> Result<MoveExtractor, String> {
 pub fn parse_multiple_games_native(
     pgns: &Vec<String>,
     num_threads: Option<usize>,
+    store_legal_moves: bool,
 ) -> Result<Vec<MoveExtractor>, String> {
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
 
@@ -450,7 +461,7 @@ pub fn parse_multiple_games_native(
 
     thread_pool.install(|| {
         pgns.par_iter()
-            .map(|pgn| parse_single_game_native(pgn))
+            .map(|pgn| parse_single_game_native(pgn, store_legal_moves))
             .collect()
     })
 }
@@ -458,6 +469,7 @@ pub fn parse_multiple_games_native(
 fn _parse_game_moves_from_arrow_chunks_native(
     pgn_chunked_array: &PyChunkedArray,
     num_threads: Option<usize>,
+    store_legal_moves: bool,
 ) -> Result<Vec<MoveExtractor>, String> {
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
     let thread_pool = ThreadPoolBuilder::new()
@@ -494,7 +506,7 @@ fn _parse_game_moves_from_arrow_chunks_native(
     thread_pool.install(|| {
         pgn_str_slices
             .par_iter()
-            .map(|&pgn_s| parse_single_game_native(pgn_s))
+            .map(|&pgn_s| parse_single_game_native(pgn_s, store_legal_moves))
             .collect::<Result<Vec<MoveExtractor>, String>>()
     })
 }
@@ -503,25 +515,33 @@ fn _parse_game_moves_from_arrow_chunks_native(
 // TODO check if I can call py.allow_threads and release GIL
 // see https://docs.rs/pyo3-arrow/0.10.1/pyo3_arrow/
 #[pyfunction]
+#[pyo3(signature = (pgn, store_legal_moves = false))]
 /// Parses a single PGN game string.
-fn parse_game(pgn: &str) -> PyResult<MoveExtractor> {
-    parse_single_game_native(pgn).map_err(pyo3::exceptions::PyValueError::new_err)
+fn parse_game(pgn: &str, store_legal_moves: bool) -> PyResult<MoveExtractor> {
+    parse_single_game_native(pgn, store_legal_moves)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// In parallel, parse a set of games
 #[pyfunction]
-#[pyo3(signature = (pgns, num_threads=None))]
-fn parse_games(pgns: Vec<String>, num_threads: Option<usize>) -> PyResult<Vec<MoveExtractor>> {
-    parse_multiple_games_native(&pgns, num_threads).map_err(pyo3::exceptions::PyValueError::new_err)
+#[pyo3(signature = (pgns, num_threads=None, store_legal_moves=false))]
+fn parse_games(
+    pgns: Vec<String>,
+    num_threads: Option<usize>,
+    store_legal_moves: bool,
+) -> PyResult<Vec<MoveExtractor>> {
+    parse_multiple_games_native(&pgns, num_threads, store_legal_moves)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (pgn_chunked_array, num_threads=None))]
+#[pyo3(signature = (pgn_chunked_array, num_threads=None, store_legal_moves=false))]
 fn parse_game_moves_arrow_chunked_array(
     pgn_chunked_array: PyChunkedArray,
     num_threads: Option<usize>,
+    store_legal_moves: bool,
 ) -> PyResult<Vec<MoveExtractor>> {
-    _parse_game_moves_from_arrow_chunks_native(&pgn_chunked_array, num_threads)
+    _parse_game_moves_from_arrow_chunks_native(&pgn_chunked_array, num_threads, store_legal_moves)
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
