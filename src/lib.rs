@@ -626,4 +626,14 @@ mod pyucimove_tests {
             "PyUciMove(from_square=b7, to_square=b8, promotion=Some(InvalidRole(99)))"
         );
     }
+
+    #[test]
+    fn test_parse_game_without_headers() {
+        let pgn = "1. Nf3 d5 2. e4 c5 3. exd5 e5 4. dxe6 0-1";
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert_eq!(extractor.moves.len(), 7);
+        assert_eq!(extractor.outcome, Some("Black".to_string()));
+    }
 }
