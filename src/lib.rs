@@ -5,7 +5,9 @@ use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use shakmaty::CastlingMode;
 use shakmaty::Color;
+use shakmaty::fen::Fen;
 use shakmaty::{Chess, Position, Role, Square, uci::UciMove};
 use std::io::Cursor;
 use std::ops::ControlFlow;
@@ -274,12 +276,53 @@ impl Visitor for MoveExtractor {
         self.moves.clear();
         self.flat_legal_moves.clear();
         self.legal_moves_offsets.clear();
-        self.pos = Chess::default();
         self.valid_moves = true;
         self.comments.clear();
         self.evals.clear();
         self.clock_times.clear();
         self.castling_rights.clear();
+
+        // Determine castling mode from Variant header (case-insensitive)
+        let castling_mode = self
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Variant"))
+            .and_then(|(_, v)| {
+                let v_lower = v.to_lowercase();
+                if v_lower == "chess960" {
+                    Some(CastlingMode::Chess960)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(CastlingMode::Standard);
+
+        // Try to parse FEN from headers, fall back to default position
+        let fen_header = self
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("FEN"))
+            .map(|(_, v)| v.as_str());
+
+        if let Some(fen_str) = fen_header {
+            match fen_str.parse::<Fen>() {
+                Ok(fen) => match fen.into_position(castling_mode) {
+                    Ok(pos) => self.pos = pos,
+                    Err(e) => {
+                        eprintln!("invalid FEN position: {}", e);
+                        self.pos = Chess::default();
+                        self.valid_moves = false;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("failed to parse FEN: {}", e);
+                    self.pos = Chess::default();
+                    self.valid_moves = false;
+                }
+            }
+        } else {
+            self.pos = Chess::default();
+        }
 
         self.push_castling_bitboards();
         if self.store_legal_moves {
@@ -635,5 +678,81 @@ mod pyucimove_tests {
         let extractor = result.unwrap();
         assert_eq!(extractor.moves.len(), 7);
         assert_eq!(extractor.outcome, Some("Black".to_string()));
+    }
+
+    #[test]
+    fn test_parse_game_with_standard_fen() {
+        // A game starting from a mid-game position
+        let pgn = r#"[FEN "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
+
+3. Bb5 a6 4. Ba4 Nf6 1-0"#;
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert!(extractor.valid_moves, "Moves should be valid");
+        assert_eq!(extractor.moves.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_chess960_game() {
+        // Chess960 game with custom starting position
+        let pgn = r#"[Variant "chess960"]
+[FEN "brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1"]
+
+1. g3 d5 2. d4 g6 3. b3 Nf6 1-0"#;
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert!(
+            extractor.valid_moves,
+            "Chess960 moves should be valid with proper FEN"
+        );
+        assert_eq!(extractor.moves.len(), 6);
+    }
+
+    #[test]
+    fn test_parse_chess960_variant_case_insensitive() {
+        // Test that variant detection is case-insensitive
+        let pgn = r#"[Variant "Chess960"]
+[FEN "brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1"]
+
+1. g3 d5 1-0"#;
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert!(
+            extractor.valid_moves,
+            "Should handle Chess960 case variations"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_fen_falls_back() {
+        // Invalid FEN should fall back to default and mark invalid
+        let pgn = r#"[FEN "invalid fen string"]
+
+1. e4 e5 1-0"#;
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert!(
+            !extractor.valid_moves,
+            "Should mark as invalid when FEN parsing fails"
+        );
+    }
+
+    #[test]
+    fn test_fen_header_case_insensitive() {
+        // FEN header key should be case-insensitive
+        let pgn = r#"[fen "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
+
+3. Bb5 1-0"#;
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert!(
+            extractor.valid_moves,
+            "Should handle lowercase 'fen' header"
+        );
     }
 }
