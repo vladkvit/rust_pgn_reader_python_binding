@@ -755,4 +755,22 @@ mod pyucimove_tests {
             "Should handle lowercase 'fen' header"
         );
     }
+
+    #[test]
+    fn test_parse_game_with_custom_fen_no_variant() {
+        // A standard chess game starting from a mid-game position (no Variant header)
+        // Position after 1.e4 e5 2.Nf3 Nc6 3.Bb5 (Ruy Lopez)
+        let pgn = r#"[Event "Test Game"]
+    [FEN "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"]
+
+    3... a6 4. Ba4 Nf6 5. O-O Be7 1-0"#;
+        let result = parse_single_game_native(pgn, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert!(
+            extractor.valid_moves,
+            "Standard game with custom FEN should be valid"
+        );
+        assert_eq!(extractor.moves.len(), 5); // a6, Ba4, Nf6, O-O, Be7
+    }
 }
