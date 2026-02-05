@@ -4,11 +4,9 @@ import os
 import numpy as np
 
 import rust_pgn_reader_python_binding
-import pyarrow as pa
+from rust_pgn_reader_python_binding import PyGameView
 
-# Add python directory to path for wrapper imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
-from wrapper import add_ergonomic_methods, GameView
+import pyarrow as pa
 
 
 class TestPgnExtraction(unittest.TestCase):
@@ -689,11 +687,6 @@ class TestPgnExtraction(unittest.TestCase):
 
 
 class TestParsedGamesFlat(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """Patch ParsedGames with ergonomic methods once."""
-        add_ergonomic_methods(rust_pgn_reader_python_binding.ParsedGames)
-
     def test_basic_structure(self):
         """Test basic flat parsing returns correct structure."""
         pgns = [
@@ -840,7 +833,7 @@ class TestParsedGamesFlat(unittest.TestCase):
 
         games = list(result)
         self.assertEqual(len(games), 3)
-        self.assertIsInstance(games[0], GameView)
+        self.assertIsInstance(games[0], PyGameView)
 
     def test_slicing(self):
         """Test slicing returns BatchSlice."""
