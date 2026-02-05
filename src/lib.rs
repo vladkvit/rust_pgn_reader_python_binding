@@ -5,17 +5,24 @@ use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use std::collections::HashMap;
+
 use std::io::Cursor;
 
 mod board_serialization;
 mod comment_parsing;
+mod flat_visitor;
 mod python_bindings;
 mod visitor;
 
+use flat_visitor::{parse_game_to_flat, FlatBuffers};
 use python_bindings::{ParsedGames, ParsedGamesIter, PositionStatus, PyGameView, PyUciMove};
 use visitor::MoveExtractor;
 
+/// Parse games from Arrow chunked array into flat NumPy arrays.
+///
+/// This implementation uses thread-local FlatBuffers that are merged after
+/// parallel parsing, avoiding the overhead of per-game Vec allocations
+/// followed by a sequential copy loop.
 #[pyfunction]
 #[pyo3(signature = (pgn_chunked_array, num_threads=None))]
 fn parse_games_flat(
@@ -23,158 +30,132 @@ fn parse_games_flat(
     pgn_chunked_array: PyChunkedArray,
     num_threads: Option<usize>,
 ) -> PyResult<ParsedGames> {
-    // 1. Parse all games using existing logic
-    let extractors = _parse_game_moves_from_arrow_chunks_native(
-        &pgn_chunked_array,
-        num_threads,
-        false, // store_legal_moves = false for performance
-    )
-    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
+    let num_threads = num_threads.unwrap_or_else(num_cpus::get);
 
-    let n_games = extractors.len();
-
-    // 2. Compute move counts and position counts from actual recorded data
-    let move_counts: Vec<u32> = extractors.iter().map(|e| e.moves.len() as u32).collect();
-
-    // Position counts derived from actual board_states data
-    let position_counts: Vec<u32> = extractors
-        .iter()
-        .map(|e| (e.board_states.len() / 64) as u32)
-        .collect();
-
-    // Build move offsets
-    let mut move_offsets_vec: Vec<u32> = Vec::with_capacity(n_games + 1);
-    move_offsets_vec.push(0);
-    for &count in &move_counts {
-        move_offsets_vec.push(move_offsets_vec.last().unwrap() + count);
+    // Extract PGN strings from Arrow chunks
+    let mut num_elements = 0;
+    for chunk in pgn_chunked_array.chunks() {
+        num_elements += chunk.len();
     }
 
-    // Build position offsets
-    let mut position_offsets_vec: Vec<u32> = Vec::with_capacity(n_games + 1);
-    position_offsets_vec.push(0);
-    for &count in &position_counts {
-        position_offsets_vec.push(position_offsets_vec.last().unwrap() + count);
-    }
-
-    let total_moves = *move_offsets_vec.last().unwrap() as usize;
-    let total_positions = *position_offsets_vec.last().unwrap() as usize;
-
-    // 3. Pre-allocate flat vectors
-    let mut boards_vec: Vec<u8> = Vec::with_capacity(total_positions * 64);
-    let mut castling_vec: Vec<bool> = Vec::with_capacity(total_positions * 4);
-    let mut en_passant_vec: Vec<i8> = Vec::with_capacity(total_positions);
-    let mut halfmove_clock_vec: Vec<u8> = Vec::with_capacity(total_positions);
-    let mut turn_vec: Vec<bool> = Vec::with_capacity(total_positions);
-
-    let mut from_squares_vec: Vec<u8> = Vec::with_capacity(total_moves);
-    let mut to_squares_vec: Vec<u8> = Vec::with_capacity(total_moves);
-    let mut promotions_vec: Vec<i8> = Vec::with_capacity(total_moves);
-    let mut clocks_vec: Vec<f32> = Vec::with_capacity(total_moves);
-    let mut evals_vec: Vec<f32> = Vec::with_capacity(total_moves);
-
-    let mut is_checkmate_vec: Vec<bool> = Vec::with_capacity(n_games);
-    let mut is_stalemate_vec: Vec<bool> = Vec::with_capacity(n_games);
-    let mut is_insufficient_vec: Vec<bool> = Vec::with_capacity(n_games * 2);
-    let mut legal_move_count_vec: Vec<u16> = Vec::with_capacity(n_games);
-    let mut valid_vec: Vec<bool> = Vec::with_capacity(n_games);
-    let mut headers_vec: Vec<HashMap<String, String>> = Vec::with_capacity(n_games);
-
-    // 4. Copy data from each extractor
-    for extractor in &extractors {
-        // Board states
-        boards_vec.extend_from_slice(&extractor.board_states);
-        castling_vec.extend(extractor.castling_states.iter().copied());
-        en_passant_vec.extend_from_slice(&extractor.en_passant_states);
-        halfmove_clock_vec.extend_from_slice(&extractor.halfmove_clocks);
-        turn_vec.extend(extractor.turn_states.iter().copied());
-
-        // Moves
-        for m in &extractor.moves {
-            from_squares_vec.push(m.from_square);
-            to_squares_vec.push(m.to_square);
-            promotions_vec.push(m.promotion.map(|p| p as i8).unwrap_or(-1));
-        }
-
-        // Clocks (convert to seconds)
-        for clock in &extractor.clock_times {
-            clocks_vec.push(
-                clock
-                    .map(|(h, m, s)| h as f32 * 3600.0 + m as f32 * 60.0 + s as f32)
-                    .unwrap_or(f32::NAN),
-            );
-        }
-
-        // Evals (convert mate values to large numbers)
-        for eval in &extractor.evals {
-            evals_vec.push(eval.map(|e| e as f32).unwrap_or(f32::NAN));
-        }
-
-        // Final position status
-        if let Some(ref status) = extractor.position_status {
-            is_checkmate_vec.push(status.is_checkmate);
-            is_stalemate_vec.push(status.is_stalemate);
-            is_insufficient_vec.push(status.insufficient_material.0);
-            is_insufficient_vec.push(status.insufficient_material.1);
-            legal_move_count_vec.push(status.legal_move_count as u16);
+    let mut pgn_str_slices: Vec<&str> = Vec::with_capacity(num_elements);
+    for chunk in pgn_chunked_array.chunks() {
+        if let Some(string_array) = chunk.as_any().downcast_ref::<StringArray>() {
+            for i in 0..string_array.len() {
+                if string_array.is_valid(i) {
+                    pgn_str_slices.push(string_array.value(i));
+                }
+            }
+        } else if let Some(large_string_array) = chunk.as_any().downcast_ref::<LargeStringArray>() {
+            for i in 0..large_string_array.len() {
+                if large_string_array.is_valid(i) {
+                    pgn_str_slices.push(large_string_array.value(i));
+                }
+            }
         } else {
-            // No status computed - use defaults
-            is_checkmate_vec.push(false);
-            is_stalemate_vec.push(false);
-            is_insufficient_vec.push(false);
-            is_insufficient_vec.push(false);
-            legal_move_count_vec.push(0);
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unsupported array type in ChunkedArray: {:?}",
+                chunk.data_type()
+            )));
         }
-
-        // Valid flag
-        valid_vec.push(extractor.valid_moves);
-
-        // Headers as HashMap
-        let header_map: HashMap<String, String> = extractor
-            .headers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        headers_vec.push(header_map);
     }
 
-    // 5. Convert to numpy arrays
+    let n_games = pgn_str_slices.len();
+
+    // Build thread pool
+    let thread_pool = ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Failed to build thread pool: {}",
+                e
+            ))
+        })?;
+
+    // Estimate capacity: ~70 moves per game
+    let games_per_thread = (n_games + num_threads - 1) / num_threads;
+    let moves_per_game = 70;
+
+    // Parse in parallel using fold_with for thread-local buffer accumulation.
+    // fold_with gives each worker thread its own FlatBuffers instance to accumulate into.
+    // This is more efficient than fold() which creates buffers per work-stealing chunk.
+    let thread_results: Vec<FlatBuffers> = thread_pool.install(|| {
+        pgn_str_slices
+            .par_iter()
+            .fold_with(
+                FlatBuffers::with_capacity(games_per_thread, moves_per_game),
+                |mut buffers, &pgn| {
+                    let _ = parse_game_to_flat(pgn, &mut buffers);
+                    buffers
+                },
+            )
+            .collect()
+    });
+
+    // Merge all thread-local buffers (this is O(num_threads) not O(num_games))
+    let mut combined_buffers = FlatBuffers::default();
+    for buf in thread_results {
+        combined_buffers.merge(buf);
+    }
+
+    // Convert FlatBuffers to ParsedGames with NumPy arrays
+    flat_buffers_to_parsed_games(py, combined_buffers)
+}
+
+/// Convert FlatBuffers to ParsedGames with NumPy arrays.
+fn flat_buffers_to_parsed_games(py: Python<'_>, buffers: FlatBuffers) -> PyResult<ParsedGames> {
+    let n_games = buffers.num_games();
+    let total_positions = buffers.total_positions();
+
+    // Compute offsets
+    let move_offsets_vec = buffers.compute_move_offsets();
+    let position_offsets_vec = buffers.compute_position_offsets();
+
+    // Convert to NumPy arrays
     // Boards: reshape from flat to (N_positions, 8, 8)
-    let boards_array = PyArray1::from_vec(py, boards_vec);
+    let boards_array = PyArray1::from_vec(py, buffers.boards);
     let boards_reshaped = boards_array
         .reshape([total_positions, 8, 8])
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     // Castling: reshape from flat to (N_positions, 4)
-    let castling_array = PyArray1::from_vec(py, castling_vec);
+    let castling_array = PyArray1::from_vec(py, buffers.castling);
     let castling_reshaped = castling_array
         .reshape([total_positions, 4])
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     // 1D arrays
-    let en_passant_array = PyArray1::from_vec(py, en_passant_vec);
-    let halfmove_clock_array = PyArray1::from_vec(py, halfmove_clock_vec);
-    let turn_array = PyArray1::from_vec(py, turn_vec);
+    let en_passant_array = PyArray1::from_vec(py, buffers.en_passant);
+    let halfmove_clock_array = PyArray1::from_vec(py, buffers.halfmove_clock);
+    let turn_array = PyArray1::from_vec(py, buffers.turn);
 
-    let from_squares_array = PyArray1::from_vec(py, from_squares_vec);
-    let to_squares_array = PyArray1::from_vec(py, to_squares_vec);
-    let promotions_array = PyArray1::from_vec(py, promotions_vec);
-    let clocks_array = PyArray1::from_vec(py, clocks_vec);
-    let evals_array = PyArray1::from_vec(py, evals_vec);
+    let from_squares_array = PyArray1::from_vec(py, buffers.from_squares);
+    let to_squares_array = PyArray1::from_vec(py, buffers.to_squares);
+    let promotions_array = PyArray1::from_vec(py, buffers.promotions);
+    let clocks_array = PyArray1::from_vec(py, buffers.clocks);
+    let evals_array = PyArray1::from_vec(py, buffers.evals);
 
     let move_offsets_array = PyArray1::from_vec(py, move_offsets_vec);
     let position_offsets_array = PyArray1::from_vec(py, position_offsets_vec);
 
-    let is_checkmate_array = PyArray1::from_vec(py, is_checkmate_vec);
-    let is_stalemate_array = PyArray1::from_vec(py, is_stalemate_vec);
+    let is_checkmate_array = PyArray1::from_vec(py, buffers.is_checkmate);
+    let is_stalemate_array = PyArray1::from_vec(py, buffers.is_stalemate);
 
     // is_insufficient: reshape to (N_games, 2)
-    let is_insufficient_array = PyArray1::from_vec(py, is_insufficient_vec);
-    let is_insufficient_reshaped = is_insufficient_array
-        .reshape([n_games, 2])
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    let is_insufficient_array = PyArray1::from_vec(py, buffers.is_insufficient);
+    let is_insufficient_reshaped = if n_games > 0 {
+        is_insufficient_array
+            .reshape([n_games, 2])
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?
+    } else {
+        is_insufficient_array
+            .reshape([0, 2])
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?
+    };
 
-    let legal_move_count_array = PyArray1::from_vec(py, legal_move_count_vec);
-    let valid_array = PyArray1::from_vec(py, valid_vec);
+    let legal_move_count_array = PyArray1::from_vec(py, buffers.legal_move_count);
+    let valid_array = PyArray1::from_vec(py, buffers.valid);
 
     Ok(ParsedGames {
         boards: boards_reshaped.unbind().into_any(),
@@ -194,7 +175,7 @@ fn parse_games_flat(
         is_insufficient: is_insufficient_reshaped.unbind().into_any(),
         legal_move_count: legal_move_count_array.unbind().into_any(),
         valid: valid_array.unbind().into_any(),
-        headers: headers_vec,
+        headers: buffers.headers,
     })
 }
 
