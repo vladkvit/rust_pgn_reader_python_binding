@@ -1,18 +1,25 @@
-use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
+use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
 use arrow_array::{Array, LargeStringArray, StringArray};
+use numpy::{PyArray1, PyArrayMethods};
 use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
+use shakmaty::fen::Fen;
 use shakmaty::CastlingMode;
 use shakmaty::Color;
-use shakmaty::fen::Fen;
-use shakmaty::{Chess, Position, Role, Square, uci::UciMove};
+use shakmaty::{uci::UciMove, Chess, Position, Role, Square};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::ControlFlow;
 
+mod board_serialization;
 mod comment_parsing;
+
+use board_serialization::{
+    get_castling_rights, get_en_passant_file, get_halfmove_clock, get_turn, serialize_board,
+};
 
 // Definition of PyUciMove
 #[pyclass(get_all, set_all, module = "rust_pgn_reader_python_binding")]
@@ -142,6 +149,13 @@ pub struct MoveExtractor {
     position_status: Option<PositionStatus>,
 
     pos: Chess,
+
+    // Board state tracking for flat output (not directly exposed to Python)
+    board_states: Vec<u8>,      // Flattened: 64 bytes per position
+    en_passant_states: Vec<i8>, // Per position: -1 or file 0-7
+    halfmove_clocks: Vec<u8>,   // Per position
+    turn_states: Vec<bool>,     // Per position: true=white
+    castling_states: Vec<bool>, // Flattened: 4 bools per position [K,Q,k,q]
 }
 
 #[pymethods]
@@ -163,6 +177,11 @@ impl MoveExtractor {
             headers: Vec::with_capacity(10),
             castling_rights: Vec::with_capacity(100),
             position_status: None,
+            board_states: Vec::with_capacity(100 * 64),
+            en_passant_states: Vec::with_capacity(100),
+            halfmove_clocks: Vec::with_capacity(100),
+            turn_states: Vec::with_capacity(100),
+            castling_states: Vec::with_capacity(100 * 4),
         }
     }
 
@@ -207,6 +226,17 @@ impl MoveExtractor {
                 });
             }
         }
+    }
+
+    /// Record current board state to flat arrays for ParsedGames output.
+    fn push_board_state(&mut self) {
+        self.board_states
+            .extend_from_slice(&serialize_board(&self.pos));
+        self.en_passant_states.push(get_en_passant_file(&self.pos));
+        self.halfmove_clocks.push(get_halfmove_clock(&self.pos));
+        self.turn_states.push(get_turn(&self.pos));
+        let castling = get_castling_rights(&self.pos);
+        self.castling_states.extend_from_slice(&castling);
     }
 
     fn update_position_status(&mut self) {
@@ -281,6 +311,11 @@ impl Visitor for MoveExtractor {
         self.evals.clear();
         self.clock_times.clear();
         self.castling_rights.clear();
+        self.board_states.clear();
+        self.en_passant_states.clear();
+        self.halfmove_clocks.clear();
+        self.turn_states.clear();
+        self.castling_states.clear();
 
         // Determine castling mode from Variant header (case-insensitive)
         let castling_mode = self
@@ -328,6 +363,8 @@ impl Visitor for MoveExtractor {
         if self.store_legal_moves {
             self.push_legal_moves();
         }
+        // Record initial board state for flat output
+        self.push_board_state();
         ControlFlow::Continue(())
     }
 
@@ -345,6 +382,8 @@ impl Visitor for MoveExtractor {
                     if self.store_legal_moves {
                         self.push_legal_moves();
                     }
+                    // Record board state after move for flat output
+                    self.push_board_state();
                     let uci_move_obj = UciMove::from_standard(m);
 
                     match uci_move_obj {
@@ -475,6 +514,281 @@ impl Visitor for MoveExtractor {
     }
 }
 
+/// Flat array container for parsed chess games, optimized for ML training.
+///
+/// # Indexing
+/// - `N_games`: Number of games
+/// - `N_moves`: Total moves across all games  
+/// - `N_positions`: Total board positions recorded (varies per game due to initial position + moves)
+///
+/// # Board layout
+/// Boards use square indexing: a1=0, b1=1, ..., h8=63
+/// Piece encoding: 0=empty, 1-6=white PNBRQK, 7-12=black pnbrqk
+#[pyclass]
+pub struct ParsedGames {
+    // === Board state arrays (N_positions) ===
+    /// Board positions, shape (N_positions, 8, 8), dtype uint8
+    #[pyo3(get)]
+    boards: Py<PyAny>,
+
+    /// Castling rights [K,Q,k,q], shape (N_positions, 4), dtype bool
+    #[pyo3(get)]
+    castling: Py<PyAny>,
+
+    /// En passant file (-1 if none), shape (N_positions,), dtype int8
+    #[pyo3(get)]
+    en_passant: Py<PyAny>,
+
+    /// Halfmove clock, shape (N_positions,), dtype uint8
+    #[pyo3(get)]
+    halfmove_clock: Py<PyAny>,
+
+    /// Side to move (true=white), shape (N_positions,), dtype bool
+    #[pyo3(get)]
+    turn: Py<PyAny>,
+
+    // === Move arrays (N_moves) ===
+    /// From squares, shape (N_moves,), dtype uint8
+    #[pyo3(get)]
+    from_squares: Py<PyAny>,
+
+    /// To squares, shape (N_moves,), dtype uint8
+    #[pyo3(get)]
+    to_squares: Py<PyAny>,
+
+    /// Promotions (-1=none, 2=N, 3=B, 4=R, 5=Q), shape (N_moves,), dtype int8
+    #[pyo3(get)]
+    promotions: Py<PyAny>,
+
+    /// Clock times in seconds (NaN if missing), shape (N_moves,), dtype float32
+    #[pyo3(get)]
+    clocks: Py<PyAny>,
+
+    /// Engine evals (NaN if missing), shape (N_moves,), dtype float32
+    #[pyo3(get)]
+    evals: Py<PyAny>,
+
+    // === Offsets ===
+    /// Move offsets for CSR-style indexing, shape (N_games + 1,), dtype uint32
+    /// Game i's moves: move_offsets[i]..move_offsets[i+1]
+    #[pyo3(get)]
+    move_offsets: Py<PyAny>,
+
+    /// Position offsets for CSR-style indexing, shape (N_games + 1,), dtype uint32
+    /// Game i's positions: position_offsets[i]..position_offsets[i+1]
+    #[pyo3(get)]
+    position_offsets: Py<PyAny>,
+
+    // === Final position status (N_games) ===
+    /// Final position is checkmate, shape (N_games,), dtype bool
+    #[pyo3(get)]
+    is_checkmate: Py<PyAny>,
+
+    /// Final position is stalemate, shape (N_games,), dtype bool
+    #[pyo3(get)]
+    is_stalemate: Py<PyAny>,
+
+    /// Insufficient material (white, black), shape (N_games, 2), dtype bool
+    #[pyo3(get)]
+    is_insufficient: Py<PyAny>,
+
+    /// Legal move count in final position, shape (N_games,), dtype uint16
+    #[pyo3(get)]
+    legal_move_count: Py<PyAny>,
+
+    // === Parse status (N_games) ===
+    /// Whether game parsed successfully, shape (N_games,), dtype bool
+    #[pyo3(get)]
+    valid: Py<PyAny>,
+
+    // === Raw headers (N_games) ===
+    /// Raw PGN headers as list of dicts
+    #[pyo3(get)]
+    headers: Vec<HashMap<String, String>>,
+}
+
+#[pyfunction]
+#[pyo3(signature = (pgn_chunked_array, num_threads=None))]
+fn parse_games_flat(
+    py: Python<'_>,
+    pgn_chunked_array: PyChunkedArray,
+    num_threads: Option<usize>,
+) -> PyResult<ParsedGames> {
+    // 1. Parse all games using existing logic
+    let extractors = _parse_game_moves_from_arrow_chunks_native(
+        &pgn_chunked_array,
+        num_threads,
+        false, // store_legal_moves = false for performance
+    )
+    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
+
+    let n_games = extractors.len();
+
+    // 2. Compute move counts and position counts from actual recorded data
+    let move_counts: Vec<u32> = extractors.iter().map(|e| e.moves.len() as u32).collect();
+
+    // Position counts derived from actual board_states data
+    let position_counts: Vec<u32> = extractors
+        .iter()
+        .map(|e| (e.board_states.len() / 64) as u32)
+        .collect();
+
+    // Build move offsets
+    let mut move_offsets_vec: Vec<u32> = Vec::with_capacity(n_games + 1);
+    move_offsets_vec.push(0);
+    for &count in &move_counts {
+        move_offsets_vec.push(move_offsets_vec.last().unwrap() + count);
+    }
+
+    // Build position offsets
+    let mut position_offsets_vec: Vec<u32> = Vec::with_capacity(n_games + 1);
+    position_offsets_vec.push(0);
+    for &count in &position_counts {
+        position_offsets_vec.push(position_offsets_vec.last().unwrap() + count);
+    }
+
+    let total_moves = *move_offsets_vec.last().unwrap() as usize;
+    let total_positions = *position_offsets_vec.last().unwrap() as usize;
+
+    // 3. Pre-allocate flat vectors
+    let mut boards_vec: Vec<u8> = Vec::with_capacity(total_positions * 64);
+    let mut castling_vec: Vec<bool> = Vec::with_capacity(total_positions * 4);
+    let mut en_passant_vec: Vec<i8> = Vec::with_capacity(total_positions);
+    let mut halfmove_clock_vec: Vec<u8> = Vec::with_capacity(total_positions);
+    let mut turn_vec: Vec<bool> = Vec::with_capacity(total_positions);
+
+    let mut from_squares_vec: Vec<u8> = Vec::with_capacity(total_moves);
+    let mut to_squares_vec: Vec<u8> = Vec::with_capacity(total_moves);
+    let mut promotions_vec: Vec<i8> = Vec::with_capacity(total_moves);
+    let mut clocks_vec: Vec<f32> = Vec::with_capacity(total_moves);
+    let mut evals_vec: Vec<f32> = Vec::with_capacity(total_moves);
+
+    let mut is_checkmate_vec: Vec<bool> = Vec::with_capacity(n_games);
+    let mut is_stalemate_vec: Vec<bool> = Vec::with_capacity(n_games);
+    let mut is_insufficient_vec: Vec<bool> = Vec::with_capacity(n_games * 2);
+    let mut legal_move_count_vec: Vec<u16> = Vec::with_capacity(n_games);
+    let mut valid_vec: Vec<bool> = Vec::with_capacity(n_games);
+    let mut headers_vec: Vec<HashMap<String, String>> = Vec::with_capacity(n_games);
+
+    // 4. Copy data from each extractor
+    for extractor in &extractors {
+        // Board states
+        boards_vec.extend_from_slice(&extractor.board_states);
+        castling_vec.extend(extractor.castling_states.iter().copied());
+        en_passant_vec.extend_from_slice(&extractor.en_passant_states);
+        halfmove_clock_vec.extend_from_slice(&extractor.halfmove_clocks);
+        turn_vec.extend(extractor.turn_states.iter().copied());
+
+        // Moves
+        for m in &extractor.moves {
+            from_squares_vec.push(m.from_square);
+            to_squares_vec.push(m.to_square);
+            promotions_vec.push(m.promotion.map(|p| p as i8).unwrap_or(-1));
+        }
+
+        // Clocks (convert to seconds)
+        for clock in &extractor.clock_times {
+            clocks_vec.push(
+                clock
+                    .map(|(h, m, s)| h as f32 * 3600.0 + m as f32 * 60.0 + s as f32)
+                    .unwrap_or(f32::NAN),
+            );
+        }
+
+        // Evals (convert mate values to large numbers)
+        for eval in &extractor.evals {
+            evals_vec.push(eval.map(|e| e as f32).unwrap_or(f32::NAN));
+        }
+
+        // Final position status
+        if let Some(ref status) = extractor.position_status {
+            is_checkmate_vec.push(status.is_checkmate);
+            is_stalemate_vec.push(status.is_stalemate);
+            is_insufficient_vec.push(status.insufficient_material.0);
+            is_insufficient_vec.push(status.insufficient_material.1);
+            legal_move_count_vec.push(status.legal_move_count as u16);
+        } else {
+            // No status computed - use defaults
+            is_checkmate_vec.push(false);
+            is_stalemate_vec.push(false);
+            is_insufficient_vec.push(false);
+            is_insufficient_vec.push(false);
+            legal_move_count_vec.push(0);
+        }
+
+        // Valid flag
+        valid_vec.push(extractor.valid_moves);
+
+        // Headers as HashMap
+        let header_map: HashMap<String, String> = extractor
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        headers_vec.push(header_map);
+    }
+
+    // 5. Convert to numpy arrays
+    // Boards: reshape from flat to (N_positions, 8, 8)
+    let boards_array = PyArray1::from_vec(py, boards_vec);
+    let boards_reshaped = boards_array
+        .reshape([total_positions, 8, 8])
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
+    // Castling: reshape from flat to (N_positions, 4)
+    let castling_array = PyArray1::from_vec(py, castling_vec);
+    let castling_reshaped = castling_array
+        .reshape([total_positions, 4])
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
+    // 1D arrays
+    let en_passant_array = PyArray1::from_vec(py, en_passant_vec);
+    let halfmove_clock_array = PyArray1::from_vec(py, halfmove_clock_vec);
+    let turn_array = PyArray1::from_vec(py, turn_vec);
+
+    let from_squares_array = PyArray1::from_vec(py, from_squares_vec);
+    let to_squares_array = PyArray1::from_vec(py, to_squares_vec);
+    let promotions_array = PyArray1::from_vec(py, promotions_vec);
+    let clocks_array = PyArray1::from_vec(py, clocks_vec);
+    let evals_array = PyArray1::from_vec(py, evals_vec);
+
+    let move_offsets_array = PyArray1::from_vec(py, move_offsets_vec);
+    let position_offsets_array = PyArray1::from_vec(py, position_offsets_vec);
+
+    let is_checkmate_array = PyArray1::from_vec(py, is_checkmate_vec);
+    let is_stalemate_array = PyArray1::from_vec(py, is_stalemate_vec);
+
+    // is_insufficient: reshape to (N_games, 2)
+    let is_insufficient_array = PyArray1::from_vec(py, is_insufficient_vec);
+    let is_insufficient_reshaped = is_insufficient_array
+        .reshape([n_games, 2])
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
+    let legal_move_count_array = PyArray1::from_vec(py, legal_move_count_vec);
+    let valid_array = PyArray1::from_vec(py, valid_vec);
+
+    Ok(ParsedGames {
+        boards: boards_reshaped.unbind().into_any(),
+        castling: castling_reshaped.unbind().into_any(),
+        en_passant: en_passant_array.unbind().into_any(),
+        halfmove_clock: halfmove_clock_array.unbind().into_any(),
+        turn: turn_array.unbind().into_any(),
+        from_squares: from_squares_array.unbind().into_any(),
+        to_squares: to_squares_array.unbind().into_any(),
+        promotions: promotions_array.unbind().into_any(),
+        clocks: clocks_array.unbind().into_any(),
+        evals: evals_array.unbind().into_any(),
+        move_offsets: move_offsets_array.unbind().into_any(),
+        position_offsets: position_offsets_array.unbind().into_any(),
+        is_checkmate: is_checkmate_array.unbind().into_any(),
+        is_stalemate: is_stalemate_array.unbind().into_any(),
+        is_insufficient: is_insufficient_reshaped.unbind().into_any(),
+        legal_move_count: legal_move_count_array.unbind().into_any(),
+        valid: valid_array.unbind().into_any(),
+        headers: headers_vec,
+    })
+}
+
 // --- Native Rust versions (no PyResult) ---
 pub fn parse_single_game_native(
     pgn: &str,
@@ -594,9 +908,11 @@ fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
     m.add_function(wrap_pyfunction!(parse_games, m)?)?;
     m.add_function(wrap_pyfunction!(parse_game_moves_arrow_chunked_array, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_games_flat, m)?)?;
     m.add_class::<MoveExtractor>()?;
     m.add_class::<PositionStatus>()?;
     m.add_class::<PyUciMove>()?;
+    m.add_class::<ParsedGames>()?;
     Ok(())
 }
 

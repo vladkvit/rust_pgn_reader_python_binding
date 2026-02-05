@@ -1,6 +1,14 @@
 import unittest
+import sys
+import os
+import numpy as np
+
 import rust_pgn_reader_python_binding
 import pyarrow as pa
+
+# Add python directory to path for wrapper imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
+from wrapper import add_ergonomic_methods, GameView
 
 
 class TestPgnExtraction(unittest.TestCase):
@@ -678,6 +686,296 @@ class TestPgnExtraction(unittest.TestCase):
         self.assertTrue(
             extractors[1].position_status.insufficient_material == (False, False)
         )
+
+
+class TestParsedGamesFlat(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        """Patch ParsedGames with ergonomic methods once."""
+        add_ergonomic_methods(rust_pgn_reader_python_binding.ParsedGames)
+
+    def test_basic_structure(self):
+        """Test basic flat parsing returns correct structure."""
+        pgns = [
+            "1. e4 e5 2. Nf3 Nc6 3. Bb5 1-0",
+            "1. d4 d5 2. c4 e6 0-1",
+        ]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Check game count
+        self.assertEqual(len(result), 2)
+
+        # Check move offsets
+        self.assertEqual(len(result.move_offsets), 3)
+        self.assertEqual(result.move_offsets[0], 0)
+        self.assertEqual(result.move_offsets[1], 5)  # Game 1: 5 half-moves
+        self.assertEqual(result.move_offsets[2], 9)  # Game 2: 4 half-moves
+
+        # Check shapes
+        total_moves = 9
+        total_positions = 9 + 2  # moves + initial positions
+
+        self.assertEqual(result.boards.shape, (total_positions, 8, 8))
+        self.assertEqual(result.castling.shape, (total_positions, 4))
+        self.assertEqual(result.en_passant.shape, (total_positions,))
+        self.assertEqual(result.from_squares.shape, (total_moves,))
+        self.assertEqual(result.valid.shape, (2,))
+
+    def test_initial_board_encoding(self):
+        """Test initial board state encoding."""
+        pgns = ["1. e4 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        initial = result.boards[0]  # First position
+
+        # Encoding: 0=empty, 1=P, 2=N, 3=B, 4=R, 5=Q, 6=K, +6 for black
+        # Square indexing: a1=0, b1=1, ..., h1=7, a2=8, ...
+
+        # a1 (index 0) = white rook = 4
+        self.assertEqual(initial.flat[0], 4)
+        # b1 (index 1) = white knight = 2
+        self.assertEqual(initial.flat[1], 2)
+        # e1 (index 4) = white king = 6
+        self.assertEqual(initial.flat[4], 6)
+        # e2 (index 12) = white pawn = 1
+        self.assertEqual(initial.flat[12], 1)
+        # e4 (index 28) = empty = 0
+        self.assertEqual(initial.flat[28], 0)
+        # e7 (index 52) = black pawn = 7
+        self.assertEqual(initial.flat[52], 7)
+        # e8 (index 60) = black king = 12
+        self.assertEqual(initial.flat[60], 12)
+
+    def test_board_after_move(self):
+        """Test board state updates correctly after move."""
+        pgns = ["1. e4 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Position 0: initial, Position 1: after e4
+        after_e4 = result.boards[1]
+
+        # e2 (index 12) should be empty
+        self.assertEqual(after_e4.flat[12], 0)
+        # e4 (index 28) should have white pawn
+        self.assertEqual(after_e4.flat[28], 1)
+
+    def test_en_passant_tracking(self):
+        """Test en passant square tracking."""
+        pgns = ["1. e4 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Initial: no en passant
+        self.assertEqual(result.en_passant[0], -1)
+        # After e4: en passant on e-file (file index 4)
+        self.assertEqual(result.en_passant[1], 4)
+
+    def test_castling_rights(self):
+        """Test castling rights tracking."""
+        # White moves rook, losing kingside castling
+        pgns = ["1. e4 e5 2. Nf3 Nc6 3. Rg1 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Initial: all castling [K, Q, k, q] = [True, True, True, True]
+        self.assertTrue(all(result.castling[0]))
+
+        # After Rg1 (position 5): white kingside lost
+        # Castling order: [K, Q, k, q]
+        self.assertFalse(result.castling[5, 0])  # White K
+        self.assertTrue(result.castling[5, 1])  # White Q
+        self.assertTrue(result.castling[5, 2])  # Black k
+        self.assertTrue(result.castling[5, 3])  # Black q
+
+    def test_turn_tracking(self):
+        """Test side-to-move tracking."""
+        pgns = ["1. e4 e5 2. Nf3 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Initial: white to move
+        self.assertTrue(result.turn[0])
+        # After e4: black to move
+        self.assertFalse(result.turn[1])
+        # After e5: white to move
+        self.assertTrue(result.turn[2])
+
+    def test_game_view_access(self):
+        """Test GameView provides correct slices."""
+        pgns = ["1. e4 e5 2. Nf3 1-0", "1. d4 d5 0-1"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        game0 = result[0]
+        self.assertEqual(len(game0), 3)
+        self.assertEqual(game0.num_positions, 4)
+        self.assertEqual(game0.boards.shape, (4, 8, 8))
+        self.assertTrue(game0.is_valid)
+
+        game1 = result[1]
+        self.assertEqual(len(game1), 2)
+        self.assertEqual(game1.num_positions, 3)
+
+    def test_game_view_move_uci(self):
+        """Test GameView UCI move conversion."""
+        pgns = ["1. e4 e5 2. Nf3 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        game = result[0]
+        self.assertEqual(game.move_uci(0), "e2e4")
+        self.assertEqual(game.move_uci(1), "e7e5")
+        self.assertEqual(game.move_uci(2), "g1f3")
+
+        self.assertEqual(game.moves_uci(), ["e2e4", "e7e5", "g1f3"])
+
+    def test_iteration(self):
+        """Test iteration over games."""
+        pgns = ["1. e4 1-0", "1. d4 0-1", "1. c4 1/2-1/2"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        games = list(result)
+        self.assertEqual(len(games), 3)
+        self.assertIsInstance(games[0], GameView)
+
+    def test_slicing(self):
+        """Test slicing returns BatchSlice."""
+        pgns = ["1. e4 1-0", "1. d4 0-1", "1. c4 1/2-1/2"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        sliced = result[1:3]
+        self.assertEqual(len(sliced), 2)
+        games = list(sliced)
+        self.assertEqual(len(games[0]), 1)  # d4 game
+
+    def test_position_to_game_mapping(self):
+        """Test position to game index mapping."""
+        pgns = ["1. e4 e5 1-0", "1. d4 0-1"]  # 2 moves (3 pos), 1 move (2 pos)
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Positions: 0,1,2 (game 0), 3,4 (game 1)
+        pos_indices = np.array([0, 1, 2, 3, 4])
+        game_indices = result.position_to_game(pos_indices)
+
+        np.testing.assert_array_equal(game_indices, [0, 0, 0, 1, 1])
+
+    def test_move_to_game_mapping(self):
+        """Test move to game index mapping."""
+        pgns = ["1. e4 e5 1-0", "1. d4 0-1"]  # 2 moves, 1 move
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        move_indices = np.array([0, 1, 2])
+        game_indices = result.move_to_game(move_indices)
+
+        np.testing.assert_array_equal(game_indices, [0, 0, 1])
+
+    def test_clocks_and_evals(self):
+        """Test clock and eval parsing."""
+        pgn = """1. e4 { [%eval 0.17] [%clk 0:00:30] } 1... e5 { [%eval 0.19] [%clk 0:00:29] } 1-0"""
+        chunked = pa.chunked_array([pa.array([pgn])])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        self.assertAlmostEqual(result.evals[0], 0.17, places=2)
+        self.assertAlmostEqual(result.evals[1], 0.19, places=2)
+        self.assertAlmostEqual(result.clocks[0], 30.0, places=1)
+        self.assertAlmostEqual(result.clocks[1], 29.0, places=1)
+
+    def test_missing_clocks_evals_are_nan(self):
+        """Test missing clocks/evals are NaN."""
+        pgns = ["1. e4 e5 1-0"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        self.assertTrue(np.isnan(result.clocks[0]))
+        self.assertTrue(np.isnan(result.evals[0]))
+
+    def test_headers_preserved(self):
+        """Test headers are preserved as dicts."""
+        pgn = """[White "Player1"]
+[Black "Player2"]
+[WhiteElo "1500"]
+
+1. e4 1-0"""
+        chunked = pa.chunked_array([pa.array([pgn])])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        game = result[0]
+        self.assertEqual(game.headers["White"], "Player1")
+        self.assertEqual(game.headers["Black"], "Player2")
+        self.assertEqual(game.headers["WhiteElo"], "1500")
+
+    def test_invalid_game_flagged(self):
+        """Test invalid games are flagged but don't break structure."""
+        pgns = [
+            "1. e4 e5 1-0",  # Valid
+            "1. e4 Qxd7 1-0",  # Invalid move
+            "1. d4 d5 0-1",  # Valid
+        ]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        self.assertEqual(len(result), 3)
+        self.assertTrue(result.valid[0])
+        self.assertFalse(result.valid[1])
+        self.assertTrue(result.valid[2])
+
+    def test_checkmate_detection(self):
+        """Test checkmate is detected."""
+        # Scholar's mate
+        pgn = "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0"
+        chunked = pa.chunked_array([pa.array([pgn])])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        game = result[0]
+        self.assertTrue(game.is_checkmate)
+        self.assertFalse(game.is_stalemate)
+        self.assertEqual(game.legal_move_count, 0)
+
+    def test_promotion(self):
+        """Test promotion encoding."""
+        # Simplified position reaching promotion
+        pgn = """[FEN "8/P7/8/8/8/8/8/4K2k w - - 0 1"]
+
+1. a8=Q 1-0"""
+        chunked = pa.chunked_array([pa.array([pgn])])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Promotion to queen = 5
+        self.assertEqual(result.promotions[0], 5)
+
+        game = result[0]
+        self.assertEqual(game.move_uci(0), "a7a8q")
+
+    def test_num_properties(self):
+        """Test num_games, num_moves, num_positions properties."""
+        pgns = ["1. e4 e5 1-0", "1. d4 0-1"]  # 2 + 1 = 3 moves, 3 + 2 = 5 positions
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        self.assertEqual(result.num_games, 2)
+        self.assertEqual(result.num_moves, 3)
+        self.assertEqual(result.num_positions, 5)
+
+    def test_negative_indexing(self):
+        """Test negative index access."""
+        pgns = ["1. e4 1-0", "1. d4 0-1", "1. c4 1/2-1/2"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # -1 should be the last game
+        last_game = result[-1]
+        self.assertEqual(len(last_game), 1)
+
+        # Check that from_squares for c4 is c2
+        # c2 = file 2 (c) + rank 1 (2nd rank) * 8 = 2 + 8 = 10
+        self.assertEqual(last_game.from_squares[0], 10)  # c2
 
 
 if __name__ == "__main__":
