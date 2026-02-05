@@ -85,6 +85,9 @@ impl FlatBuffers {
 
     /// Merge another FlatBuffers into this one.
     /// Used to combine thread-local buffers after parallel parsing.
+    ///
+    /// Note: For merging multiple buffers, prefer `merge_all` which pre-allocates
+    /// to avoid repeated reallocations.
     pub fn merge(&mut self, other: FlatBuffers) {
         // Board state arrays
         self.boards.extend(other.boards);
@@ -109,6 +112,77 @@ impl FlatBuffers {
         self.legal_move_count.extend(other.legal_move_count);
         self.valid.extend(other.valid);
         self.headers.extend(other.headers);
+    }
+
+    /// Merge multiple FlatBuffers efficiently by pre-allocating total capacity.
+    ///
+    /// This avoids the repeated reallocations that occur when calling `merge`
+    /// in a loop starting from an empty buffer.
+    pub fn merge_all(buffers: Vec<FlatBuffers>) -> FlatBuffers {
+        if buffers.is_empty() {
+            return FlatBuffers::default();
+        }
+        if buffers.len() == 1 {
+            return buffers.into_iter().next().unwrap();
+        }
+
+        // Calculate total sizes
+        let total_games: usize = buffers.iter().map(|b| b.headers.len()).sum();
+        let total_positions: usize = buffers.iter().map(|b| b.boards.len() / 64).sum();
+        let total_moves: usize = buffers.iter().map(|b| b.from_squares.len()).sum();
+
+        // Pre-allocate with exact capacity
+        let mut combined = FlatBuffers {
+            // Board state arrays
+            boards: Vec::with_capacity(total_positions * 64),
+            castling: Vec::with_capacity(total_positions * 4),
+            en_passant: Vec::with_capacity(total_positions),
+            halfmove_clock: Vec::with_capacity(total_positions),
+            turn: Vec::with_capacity(total_positions),
+
+            // Move arrays
+            from_squares: Vec::with_capacity(total_moves),
+            to_squares: Vec::with_capacity(total_moves),
+            promotions: Vec::with_capacity(total_moves),
+            clocks: Vec::with_capacity(total_moves),
+            evals: Vec::with_capacity(total_moves),
+
+            // Per-game data
+            move_counts: Vec::with_capacity(total_games),
+            position_counts: Vec::with_capacity(total_games),
+            is_checkmate: Vec::with_capacity(total_games),
+            is_stalemate: Vec::with_capacity(total_games),
+            is_insufficient: Vec::with_capacity(total_games * 2),
+            legal_move_count: Vec::with_capacity(total_games),
+            valid: Vec::with_capacity(total_games),
+            headers: Vec::with_capacity(total_games),
+        };
+
+        // Now merge - no reallocations will occur
+        for buf in buffers {
+            combined.boards.extend(buf.boards);
+            combined.castling.extend(buf.castling);
+            combined.en_passant.extend(buf.en_passant);
+            combined.halfmove_clock.extend(buf.halfmove_clock);
+            combined.turn.extend(buf.turn);
+
+            combined.from_squares.extend(buf.from_squares);
+            combined.to_squares.extend(buf.to_squares);
+            combined.promotions.extend(buf.promotions);
+            combined.clocks.extend(buf.clocks);
+            combined.evals.extend(buf.evals);
+
+            combined.move_counts.extend(buf.move_counts);
+            combined.position_counts.extend(buf.position_counts);
+            combined.is_checkmate.extend(buf.is_checkmate);
+            combined.is_stalemate.extend(buf.is_stalemate);
+            combined.is_insufficient.extend(buf.is_insufficient);
+            combined.legal_move_count.extend(buf.legal_move_count);
+            combined.valid.extend(buf.valid);
+            combined.headers.extend(buf.headers);
+        }
+
+        combined
     }
 
     /// Number of games in this buffer.

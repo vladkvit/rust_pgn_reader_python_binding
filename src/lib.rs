@@ -14,7 +14,7 @@ mod flat_visitor;
 mod python_bindings;
 mod visitor;
 
-use flat_visitor::{parse_game_to_flat, FlatBuffers};
+pub use flat_visitor::{parse_game_to_flat, FlatBuffers};
 use python_bindings::{ParsedGames, ParsedGamesIter, PositionStatus, PyGameView, PyUciMove};
 use visitor::MoveExtractor;
 
@@ -93,11 +93,8 @@ fn parse_games_flat(
             .collect()
     });
 
-    // Merge all thread-local buffers (this is O(num_threads) not O(num_games))
-    let mut combined_buffers = FlatBuffers::default();
-    for buf in thread_results {
-        combined_buffers.merge(buf);
-    }
+    // Merge all thread-local buffers with pre-allocation (avoids repeated reallocations)
+    let combined_buffers = FlatBuffers::merge_all(thread_results);
 
     // Convert FlatBuffers to ParsedGames with NumPy arrays
     flat_buffers_to_parsed_games(py, combined_buffers)
