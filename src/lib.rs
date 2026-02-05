@@ -1,16 +1,16 @@
-use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
+use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
 use arrow_array::{Array, LargeStringArray, StringArray};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use pyo3::types::PySlice;
 use pyo3_arrow::PyChunkedArray;
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
+use shakmaty::fen::Fen;
 use shakmaty::CastlingMode;
 use shakmaty::Color;
-use shakmaty::fen::Fen;
-use shakmaty::{Chess, Position, Role, Square, uci::UciMove};
+use shakmaty::{uci::UciMove, Chess, Position, Role, Square};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::ControlFlow;
@@ -621,13 +621,9 @@ impl ParsedGames {
     fn num_moves(&self, py: Python<'_>) -> PyResult<usize> {
         let offsets = self.move_offsets.bind(py);
         let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
-        let len = offsets.len();
-        if len == 0 {
-            return Ok(0);
-        }
-        // SAFETY: We just checked len > 0
-        let last = unsafe { *offsets.uget([len - 1]) };
-        Ok(last as usize)
+        let readonly = offsets.readonly();
+        let slice = readonly.as_slice()?;
+        Ok(slice.last().copied().unwrap_or(0) as usize)
     }
 
     /// Total number of board positions recorded.
@@ -635,13 +631,9 @@ impl ParsedGames {
     fn num_positions(&self, py: Python<'_>) -> PyResult<usize> {
         let offsets = self.position_offsets.bind(py);
         let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
-        let len = offsets.len();
-        if len == 0 {
-            return Ok(0);
-        }
-        // SAFETY: We just checked len > 0
-        let last = unsafe { *offsets.uget([len - 1]) };
-        Ok(last as usize)
+        let readonly = offsets.readonly();
+        let slice = readonly.as_slice()?;
+        Ok(slice.last().copied().unwrap_or(0) as usize)
     }
 
     fn __len__(&self) -> usize {
@@ -827,21 +819,33 @@ impl PyGameView {
         let pos_offsets = borrowed.position_offsets.bind(py);
         let pos_offsets: &Bound<'_, PyArray1<u32>> = pos_offsets.cast()?;
 
-        // SAFETY: idx is validated by caller, and idx+1 is within bounds due to offset array structure
-        let move_start = unsafe { *move_offsets.uget([idx]) } as usize;
-        let move_end = unsafe { *move_offsets.uget([idx + 1]) } as usize;
-        let pos_start = unsafe { *pos_offsets.uget([idx]) } as usize;
-        let pos_end = unsafe { *pos_offsets.uget([idx + 1]) } as usize;
+        let move_offsets_ro = move_offsets.readonly();
+        let move_offsets_slice = move_offsets_ro.as_slice()?;
+        let pos_offsets_ro = pos_offsets.readonly();
+        let pos_offsets_slice = pos_offsets_ro.as_slice()?;
+
+        let move_start = move_offsets_slice
+            .get(idx)
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))?;
+        let move_end = move_offsets_slice
+            .get(idx + 1)
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))?;
+        let pos_start = pos_offsets_slice
+            .get(idx)
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))?;
+        let pos_end = pos_offsets_slice
+            .get(idx + 1)
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))?;
 
         drop(borrowed);
 
         Ok(Self {
             data,
             idx,
-            move_start,
-            move_end,
-            pos_start,
-            pos_end,
+            move_start: *move_start as usize,
+            move_end: *move_end as usize,
+            pos_start: *pos_start as usize,
+            pos_end: *pos_end as usize,
         })
     }
 }
@@ -996,8 +1000,12 @@ impl PyGameView {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.is_checkmate.bind(py);
         let arr: &Bound<'_, PyArray1<bool>> = arr.cast()?;
-        // SAFETY: idx is validated during construction
-        Ok(unsafe { *arr.uget([self.idx]) })
+        let readonly = arr.readonly();
+        let slice = readonly.as_slice()?;
+        slice
+            .get(self.idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))
     }
 
     /// Final position is stalemate.
@@ -1006,7 +1014,12 @@ impl PyGameView {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.is_stalemate.bind(py);
         let arr: &Bound<'_, PyArray1<bool>> = arr.cast()?;
-        Ok(unsafe { *arr.uget([self.idx]) })
+        let readonly = arr.readonly();
+        let slice = readonly.as_slice()?;
+        slice
+            .get(self.idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))
     }
 
     /// Insufficient material (white, black).
@@ -1015,9 +1028,18 @@ impl PyGameView {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.is_insufficient.bind(py);
         let arr: &Bound<'_, PyArray2<bool>> = arr.cast()?;
-        // SAFETY: idx is validated during construction
-        let white = unsafe { *arr.uget([self.idx, 0]) };
-        let black = unsafe { *arr.uget([self.idx, 1]) };
+        let readonly = arr.readonly();
+        let slice = readonly.as_slice()?;
+        // Array is shape (n_games, 2), so index is idx * 2 for white, idx * 2 + 1 for black
+        let base = self.idx * 2;
+        let white = slice
+            .get(base)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))?;
+        let black = slice
+            .get(base + 1)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))?;
         Ok((white, black))
     }
 
@@ -1027,7 +1049,12 @@ impl PyGameView {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.legal_move_count.bind(py);
         let arr: &Bound<'_, PyArray1<u16>> = arr.cast()?;
-        Ok(unsafe { *arr.uget([self.idx]) })
+        let readonly = arr.readonly();
+        let slice = readonly.as_slice()?;
+        slice
+            .get(self.idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))
     }
 
     /// Whether game parsed successfully.
@@ -1036,7 +1063,12 @@ impl PyGameView {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.valid.bind(py);
         let arr: &Bound<'_, PyArray1<bool>> = arr.cast()?;
-        Ok(unsafe { *arr.uget([self.idx]) })
+        let readonly = arr.readonly();
+        let slice = readonly.as_slice()?;
+        slice
+            .get(self.idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))
     }
 
     // === Convenience methods ===
@@ -1059,11 +1091,27 @@ impl PyGameView {
         let promo_arr = borrowed.promotions.bind(py);
         let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.cast()?;
 
+        let from_ro = from_arr.readonly();
+        let to_ro = to_arr.readonly();
+        let promo_ro = promo_arr.readonly();
+
+        let from_slice = from_ro.as_slice()?;
+        let to_slice = to_ro.as_slice()?;
+        let promo_slice = promo_ro.as_slice()?;
+
         let abs_idx = self.move_start + move_idx;
-        // SAFETY: we validated move_idx above and abs_idx is within bounds
-        let from_sq = unsafe { *from_arr.uget([abs_idx]) };
-        let to_sq = unsafe { *to_arr.uget([abs_idx]) };
-        let promo = unsafe { *promo_arr.uget([abs_idx]) };
+        let from_sq = from_slice
+            .get(abs_idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid move index"))?;
+        let to_sq = to_slice
+            .get(abs_idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid move index"))?;
+        let promo = promo_slice
+            .get(abs_idx)
+            .copied()
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid move index"))?;
 
         let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
         let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
