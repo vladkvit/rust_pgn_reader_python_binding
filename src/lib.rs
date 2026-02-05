@@ -1,8 +1,9 @@
 use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
 use arrow_array::{Array, LargeStringArray, StringArray};
-use numpy::{PyArray1, PyArrayMethods};
+use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
+use pyo3::types::PySlice;
 use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -607,6 +608,507 @@ pub struct ParsedGames {
     headers: Vec<HashMap<String, String>>,
 }
 
+#[pymethods]
+impl ParsedGames {
+    /// Number of games in the result.
+    #[getter]
+    fn num_games(&self) -> usize {
+        self.headers.len()
+    }
+
+    /// Total number of moves across all games.
+    #[getter]
+    fn num_moves(&self, py: Python<'_>) -> PyResult<usize> {
+        let offsets = self.move_offsets.bind(py);
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+        let len = offsets.len();
+        if len == 0 {
+            return Ok(0);
+        }
+        // SAFETY: We just checked len > 0
+        let last = unsafe { *offsets.uget([len - 1]) };
+        Ok(last as usize)
+    }
+
+    /// Total number of board positions recorded.
+    #[getter]
+    fn num_positions(&self, py: Python<'_>) -> PyResult<usize> {
+        let offsets = self.position_offsets.bind(py);
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+        let len = offsets.len();
+        if len == 0 {
+            return Ok(0);
+        }
+        // SAFETY: We just checked len > 0
+        let last = unsafe { *offsets.uget([len - 1]) };
+        Ok(last as usize)
+    }
+
+    fn __len__(&self) -> usize {
+        self.headers.len()
+    }
+
+    fn __getitem__(slf: Py<Self>, py: Python<'_>, idx: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let n_games = slf.borrow(py).headers.len();
+
+        // Handle integer index
+        if let Ok(mut i) = idx.extract::<isize>() {
+            // Handle negative indexing
+            if i < 0 {
+                i += n_games as isize;
+            }
+            if i < 0 || i >= n_games as isize {
+                return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                    "Game index {} out of range [0, {})",
+                    i, n_games
+                )));
+            }
+            let game_view = PyGameView::new(py, slf.clone_ref(py), i as usize)?;
+            return Ok(Py::new(py, game_view)?.into_any());
+        }
+
+        // Handle slice
+        if let Ok(slice) = idx.downcast::<PySlice>() {
+            let indices = slice.indices(n_games as isize)?;
+            let start = indices.start as usize;
+            let stop = indices.stop as usize;
+            let step = indices.step as usize;
+
+            // For simplicity, we return a list of PyGameView objects
+            let mut views: Vec<Py<PyGameView>> = Vec::new();
+            let mut i = start;
+            while i < stop {
+                let game_view = PyGameView::new(py, slf.clone_ref(py), i)?;
+                views.push(Py::new(py, game_view)?);
+                i += step;
+            }
+            return Ok(pyo3::types::PyList::new(py, views)?.into_any().unbind());
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "Invalid index type: expected int or slice, got {}",
+            idx.get_type().name()?
+        )))
+    }
+
+    fn __iter__(slf: Py<Self>, py: Python<'_>) -> PyResult<ParsedGamesIter> {
+        let n_games = slf.borrow(py).headers.len();
+        Ok(ParsedGamesIter {
+            data: slf,
+            index: 0,
+            length: n_games,
+        })
+    }
+
+    /// Map position indices to game indices.
+    ///
+    /// Useful after shuffling/sampling positions to look up game metadata.
+    ///
+    /// Args:
+    ///     position_indices: Array of indices into boards array
+    ///
+    /// Returns:
+    ///     Array of game indices (same shape as input)
+    fn position_to_game<'py>(
+        &self,
+        py: Python<'py>,
+        position_indices: &Bound<'py, PyArray1<i64>>,
+    ) -> PyResult<Py<PyArray1<i64>>> {
+        let offsets = self.position_offsets.bind(py);
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+
+        // Get numpy module for searchsorted
+        let numpy = py.import("numpy")?;
+
+        // offsets[:-1] - all but last element
+        let len = offsets.len();
+        let slice_obj = PySlice::new(py, 0, (len - 1) as isize, 1);
+        let offsets_slice = offsets.call_method1("__getitem__", (slice_obj,))?;
+
+        // searchsorted(offsets[:-1], position_indices, side='right') - 1
+        let result = numpy.call_method1(
+            "searchsorted",
+            (
+                offsets_slice,
+                position_indices,
+                pyo3::types::PyString::new(py, "right"),
+            ),
+        )?;
+
+        // Subtract 1
+        let one = 1i64.into_pyobject(py)?;
+        let result = result.call_method1("__sub__", (one,))?;
+
+        Ok(result.extract()?)
+    }
+
+    /// Map move indices to game indices.
+    ///
+    /// Args:
+    ///     move_indices: Array of indices into from_squares, to_squares, etc.
+    ///
+    /// Returns:
+    ///     Array of game indices (same shape as input)
+    fn move_to_game<'py>(
+        &self,
+        py: Python<'py>,
+        move_indices: &Bound<'py, PyArray1<i64>>,
+    ) -> PyResult<Py<PyArray1<i64>>> {
+        let offsets = self.move_offsets.bind(py);
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+
+        let numpy = py.import("numpy")?;
+        let len = offsets.len();
+        let slice_obj = PySlice::new(py, 0, (len - 1) as isize, 1);
+        let offsets_slice = offsets.call_method1("__getitem__", (slice_obj,))?;
+
+        let result = numpy.call_method1(
+            "searchsorted",
+            (
+                offsets_slice,
+                move_indices,
+                pyo3::types::PyString::new(py, "right"),
+            ),
+        )?;
+
+        let one = 1i64.into_pyobject(py)?;
+        let result = result.call_method1("__sub__", (one,))?;
+
+        Ok(result.extract()?)
+    }
+}
+
+/// Iterator over games in a ParsedGames result.
+#[pyclass]
+pub struct ParsedGamesIter {
+    data: Py<ParsedGames>,
+    index: usize,
+    length: usize,
+}
+
+#[pymethods]
+impl ParsedGamesIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(mut slf: PyRefMut<'_, Self>, py: Python<'_>) -> PyResult<Option<PyGameView>> {
+        if slf.index >= slf.length {
+            return Ok(None);
+        }
+        let game_view = PyGameView::new(py, slf.data.clone_ref(py), slf.index)?;
+        slf.index += 1;
+        Ok(Some(game_view))
+    }
+}
+
+/// Zero-copy view into a single game's data within a ParsedGames result.
+///
+/// Board indexing note: Boards use square indexing (a1=0, h8=63).
+/// To convert to rank/file:
+///     rank = square // 8
+///     file = square % 8
+#[pyclass]
+pub struct PyGameView {
+    data: Py<ParsedGames>,
+    idx: usize,
+    move_start: usize,
+    move_end: usize,
+    pos_start: usize,
+    pos_end: usize,
+}
+
+impl PyGameView {
+    fn new(py: Python<'_>, data: Py<ParsedGames>, idx: usize) -> PyResult<Self> {
+        let borrowed = data.borrow(py);
+
+        let move_offsets = borrowed.move_offsets.bind(py);
+        let move_offsets: &Bound<'_, PyArray1<u32>> = move_offsets.downcast()?;
+        let pos_offsets = borrowed.position_offsets.bind(py);
+        let pos_offsets: &Bound<'_, PyArray1<u32>> = pos_offsets.downcast()?;
+
+        // SAFETY: idx is validated by caller, and idx+1 is within bounds due to offset array structure
+        let move_start = unsafe { *move_offsets.uget([idx]) } as usize;
+        let move_end = unsafe { *move_offsets.uget([idx + 1]) } as usize;
+        let pos_start = unsafe { *pos_offsets.uget([idx]) } as usize;
+        let pos_end = unsafe { *pos_offsets.uget([idx + 1]) } as usize;
+
+        drop(borrowed);
+
+        Ok(Self {
+            data,
+            idx,
+            move_start,
+            move_end,
+            pos_start,
+            pos_end,
+        })
+    }
+}
+
+#[pymethods]
+impl PyGameView {
+    /// Number of moves in this game.
+    fn __len__(&self) -> usize {
+        self.move_end - self.move_start
+    }
+
+    /// Number of positions recorded for this game.
+    #[getter]
+    fn num_positions(&self) -> usize {
+        self.pos_end - self.pos_start
+    }
+
+    // === Board state views ===
+
+    /// Board positions, shape (num_positions, 8, 8).
+    #[getter]
+    fn boards<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let boards = borrowed.boards.bind(py);
+        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
+        let slice = boards.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Initial board position, shape (8, 8).
+    #[getter]
+    fn initial_board<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let boards = borrowed.boards.bind(py);
+        let slice = boards.call_method1("__getitem__", (self.pos_start,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Final board position, shape (8, 8).
+    #[getter]
+    fn final_board<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let boards = borrowed.boards.bind(py);
+        let slice = boards.call_method1("__getitem__", (self.pos_end - 1,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Castling rights [K,Q,k,q], shape (num_positions, 4).
+    #[getter]
+    fn castling<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.castling.bind(py);
+        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// En passant file (-1 if none), shape (num_positions,).
+    #[getter]
+    fn en_passant<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.en_passant.bind(py);
+        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Halfmove clock, shape (num_positions,).
+    #[getter]
+    fn halfmove_clock<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.halfmove_clock.bind(py);
+        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Side to move (True=white), shape (num_positions,).
+    #[getter]
+    fn turn<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.turn.bind(py);
+        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    // === Move views ===
+
+    /// From squares, shape (num_moves,).
+    #[getter]
+    fn from_squares<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.from_squares.bind(py);
+        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// To squares, shape (num_moves,).
+    #[getter]
+    fn to_squares<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.to_squares.bind(py);
+        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Promotions (-1=none, 2=N, 3=B, 4=R, 5=Q), shape (num_moves,).
+    #[getter]
+    fn promotions<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.promotions.bind(py);
+        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Clock times in seconds (NaN if missing), shape (num_moves,).
+    #[getter]
+    fn clocks<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.clocks.bind(py);
+        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    /// Engine evals (NaN if missing), shape (num_moves,).
+    #[getter]
+    fn evals<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.evals.bind(py);
+        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
+        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+        Ok(slice.unbind())
+    }
+
+    // === Per-game metadata ===
+
+    /// Raw PGN headers as dict.
+    #[getter]
+    fn headers(&self, py: Python<'_>) -> PyResult<HashMap<String, String>> {
+        let borrowed = self.data.borrow(py);
+        Ok(borrowed.headers[self.idx].clone())
+    }
+
+    /// Final position is checkmate.
+    #[getter]
+    fn is_checkmate(&self, py: Python<'_>) -> PyResult<bool> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.is_checkmate.bind(py);
+        let arr: &Bound<'_, PyArray1<bool>> = arr.downcast()?;
+        // SAFETY: idx is validated during construction
+        Ok(unsafe { *arr.uget([self.idx]) })
+    }
+
+    /// Final position is stalemate.
+    #[getter]
+    fn is_stalemate(&self, py: Python<'_>) -> PyResult<bool> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.is_stalemate.bind(py);
+        let arr: &Bound<'_, PyArray1<bool>> = arr.downcast()?;
+        Ok(unsafe { *arr.uget([self.idx]) })
+    }
+
+    /// Insufficient material (white, black).
+    #[getter]
+    fn is_insufficient(&self, py: Python<'_>) -> PyResult<(bool, bool)> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.is_insufficient.bind(py);
+        let arr: &Bound<'_, PyArray2<bool>> = arr.downcast()?;
+        // SAFETY: idx is validated during construction
+        let white = unsafe { *arr.uget([self.idx, 0]) };
+        let black = unsafe { *arr.uget([self.idx, 1]) };
+        Ok((white, black))
+    }
+
+    /// Legal move count in final position.
+    #[getter]
+    fn legal_move_count(&self, py: Python<'_>) -> PyResult<u16> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.legal_move_count.bind(py);
+        let arr: &Bound<'_, PyArray1<u16>> = arr.downcast()?;
+        Ok(unsafe { *arr.uget([self.idx]) })
+    }
+
+    /// Whether game parsed successfully.
+    #[getter]
+    fn is_valid(&self, py: Python<'_>) -> PyResult<bool> {
+        let borrowed = self.data.borrow(py);
+        let arr = borrowed.valid.bind(py);
+        let arr: &Bound<'_, PyArray1<bool>> = arr.downcast()?;
+        Ok(unsafe { *arr.uget([self.idx]) })
+    }
+
+    // === Convenience methods ===
+
+    /// Get UCI string for move at index.
+    fn move_uci(&self, py: Python<'_>, move_idx: usize) -> PyResult<String> {
+        if move_idx >= self.move_end - self.move_start {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "Move index {} out of range [0, {})",
+                move_idx,
+                self.move_end - self.move_start
+            )));
+        }
+
+        let borrowed = self.data.borrow(py);
+        let from_arr = borrowed.from_squares.bind(py);
+        let from_arr: &Bound<'_, PyArray1<u8>> = from_arr.downcast()?;
+        let to_arr = borrowed.to_squares.bind(py);
+        let to_arr: &Bound<'_, PyArray1<u8>> = to_arr.downcast()?;
+        let promo_arr = borrowed.promotions.bind(py);
+        let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.downcast()?;
+
+        let abs_idx = self.move_start + move_idx;
+        // SAFETY: we validated move_idx above and abs_idx is within bounds
+        let from_sq = unsafe { *from_arr.uget([abs_idx]) };
+        let to_sq = unsafe { *to_arr.uget([abs_idx]) };
+        let promo = unsafe { *promo_arr.uget([abs_idx]) };
+
+        let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+        let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
+
+        let mut uci = format!(
+            "{}{}{}{}",
+            files[(from_sq % 8) as usize],
+            ranks[(from_sq / 8) as usize],
+            files[(to_sq % 8) as usize],
+            ranks[(to_sq / 8) as usize]
+        );
+
+        if promo >= 0 {
+            let promo_chars = ['_', '_', 'n', 'b', 'r', 'q']; // 2=N, 3=B, 4=R, 5=Q
+            if (promo as usize) < promo_chars.len() {
+                uci.push(promo_chars[promo as usize]);
+            }
+        }
+
+        Ok(uci)
+    }
+
+    /// Get all moves as UCI strings.
+    fn moves_uci(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        let n_moves = self.move_end - self.move_start;
+        let mut result = Vec::with_capacity(n_moves);
+        for i in 0..n_moves {
+            result.push(self.move_uci(py, i)?);
+        }
+        Ok(result)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let headers = self.headers(py)?;
+        let white = headers.get("White").map(|s| s.as_str()).unwrap_or("?");
+        let black = headers.get("Black").map(|s| s.as_str()).unwrap_or("?");
+        let n_moves = self.move_end - self.move_start;
+        let is_valid = self.is_valid(py)?;
+        Ok(format!(
+            "<PyGameView {} vs {}, {} moves, valid={}>",
+            white, black, n_moves, is_valid
+        ))
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (pgn_chunked_array, num_threads=None))]
 fn parse_games_flat(
@@ -913,6 +1415,8 @@ fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PositionStatus>()?;
     m.add_class::<PyUciMove>()?;
     m.add_class::<ParsedGames>()?;
+    m.add_class::<PyGameView>()?;
+    m.add_class::<ParsedGamesIter>()?;
     Ok(())
 }
 

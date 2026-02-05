@@ -5,20 +5,10 @@ This API returns flat NumPy arrays suitable for efficient batch processing
 in machine learning pipelines.
 """
 
-import sys
-import os
-
 import numpy as np
 import pyarrow as pa
 
 import rust_pgn_reader_python_binding as pgn
-
-# Add python directory to path for wrapper imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
-from wrapper import add_ergonomic_methods, GameView
-
-# Patch ParsedGames with ergonomic methods (do this once at startup)
-add_ergonomic_methods(pgn.ParsedGames)
 
 
 # Sample PGN games with annotations
@@ -139,7 +129,7 @@ def main():
     # === Position-to-Game Mapping ===
     print(f"\n--- Position-to-Game Mapping ---")
     # Useful for shuffling positions while keeping track of game metadata
-    sample_positions = np.array([0, 5, 10, 15, 20])
+    sample_positions = np.array([0, 5, 10, 15, 20], dtype=np.int64)
     game_indices = result.position_to_game(sample_positions)
     print(f"Position indices: {sample_positions}")
     print(f"Game indices:     {game_indices}")
