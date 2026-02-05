@@ -3,7 +3,7 @@ use arrow_array::{Array, LargeStringArray, StringArray};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
-use pyo3::types::PySlice;
+use pyo3::types::{IntoPyDict, PySlice};
 use pyo3_arrow::PyChunkedArray;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -697,20 +697,31 @@ impl ParsedGames {
     /// Useful after shuffling/sampling positions to look up game metadata.
     ///
     /// Args:
-    ///     position_indices: Array of indices into boards array
+    ///     position_indices: Array of indices into boards array.
+    ///         Accepts any integer dtype; int64 is optimal (avoids conversion).
     ///
     /// Returns:
     ///     Array of game indices (same shape as input)
     fn position_to_game<'py>(
         &self,
         py: Python<'py>,
-        position_indices: &Bound<'py, PyArray1<i64>>,
+        position_indices: &Bound<'py, PyAny>,
     ) -> PyResult<Py<PyArray1<i64>>> {
         let offsets = self.position_offsets.bind(py);
         let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
 
         // Get numpy module for searchsorted
         let numpy = py.import("numpy")?;
+
+        // Convert input to int64 array (no-op if already int64)
+        let int64_dtype = numpy.getattr("int64")?;
+        let position_indices = numpy
+            .call_method1("asarray", (position_indices,))?
+            .call_method(
+                "astype",
+                (int64_dtype,),
+                Some(&[("copy", false)].into_py_dict(py)?),
+            )?;
 
         // offsets[:-1] - all but last element
         let len = offsets.len();
@@ -738,18 +749,30 @@ impl ParsedGames {
     ///
     /// Args:
     ///     move_indices: Array of indices into from_squares, to_squares, etc.
+    ///         Accepts any integer dtype; int64 is optimal (avoids conversion).
     ///
     /// Returns:
     ///     Array of game indices (same shape as input)
     fn move_to_game<'py>(
         &self,
         py: Python<'py>,
-        move_indices: &Bound<'py, PyArray1<i64>>,
+        move_indices: &Bound<'py, PyAny>,
     ) -> PyResult<Py<PyArray1<i64>>> {
         let offsets = self.move_offsets.bind(py);
         let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
 
         let numpy = py.import("numpy")?;
+
+        // Convert input to int64 array (no-op if already int64)
+        let int64_dtype = numpy.getattr("int64")?;
+        let move_indices = numpy
+            .call_method1("asarray", (move_indices,))?
+            .call_method(
+                "astype",
+                (int64_dtype,),
+                Some(&[("copy", false)].into_py_dict(py)?),
+            )?;
+
         let len = offsets.len();
         let slice_obj = PySlice::new(py, 0, (len - 1) as isize, 1);
         let offsets_slice = offsets.call_method1("__getitem__", (slice_obj,))?;

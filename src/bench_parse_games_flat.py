@@ -167,7 +167,7 @@ def benchmark_data_access_flat(result) -> dict:
     _ = result.to_squares.sum()
 
     # Random position access
-    indices = np.random.randint(0, result.num_positions, size=1000)
+    indices = np.random.randint(0, result.num_positions, size=1000, dtype=np.int64)
     _ = result.boards[indices]
 
     # Position-to-game mapping

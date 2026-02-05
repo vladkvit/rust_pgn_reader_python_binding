@@ -869,6 +869,30 @@ class TestParsedGamesFlat(unittest.TestCase):
 
         np.testing.assert_array_equal(game_indices, [0, 0, 1])
 
+    def test_position_to_game_accepts_various_dtypes(self):
+        """Test position_to_game accepts various integer dtypes."""
+        pgns = ["1. e4 e5 1-0", "1. d4 0-1"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Test various integer dtypes (int64 is optimal, others are converted)
+        for dtype in [np.int32, np.int64, np.uint32, np.uint64]:
+            pos_indices = np.array([0, 1, 2, 3, 4], dtype=dtype)
+            game_indices = result.position_to_game(pos_indices)
+            np.testing.assert_array_equal(game_indices, [0, 0, 0, 1, 1])
+
+    def test_move_to_game_accepts_various_dtypes(self):
+        """Test move_to_game accepts various integer dtypes."""
+        pgns = ["1. e4 e5 1-0", "1. d4 0-1"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+
+        # Test various integer dtypes (int64 is optimal, others are converted)
+        for dtype in [np.int32, np.int64, np.uint32, np.uint64]:
+            move_indices = np.array([0, 1, 2], dtype=dtype)
+            game_indices = result.move_to_game(move_indices)
+            np.testing.assert_array_equal(game_indices, [0, 0, 1])
+
     def test_clocks_and_evals(self):
         """Test clock and eval parsing."""
         pgn = """1. e4 { [%eval 0.17] [%clk 0:00:30] } 1... e5 { [%eval 0.19] [%clk 0:00:29] } 1-0"""

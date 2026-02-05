@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple, Dict, Iterator, Union, overload
 import pyarrow
 import numpy as np
+import numpy.typing as npt
 from numpy.typing import NDArray
 
 class PyUciMove:
@@ -337,26 +338,26 @@ class ParsedGames:
 
     # === Mapping utilities ===
 
-    def position_to_game(
-        self, position_indices: NDArray[np.int64]
-    ) -> NDArray[np.int64]:
+    def position_to_game(self, position_indices: npt.ArrayLike) -> NDArray[np.int64]:
         """Map position indices to game indices.
 
         Useful after shuffling/sampling positions to look up game metadata.
 
         Args:
-            position_indices: Array of indices into boards array
+            position_indices: Array of indices into boards array.
+                Accepts any integer dtype; int64 is optimal (avoids conversion).
 
         Returns:
             Array of game indices (same shape as input)
         """
         ...
 
-    def move_to_game(self, move_indices: NDArray[np.int64]) -> NDArray[np.int64]:
+    def move_to_game(self, move_indices: npt.ArrayLike) -> NDArray[np.int64]:
         """Map move indices to game indices.
 
         Args:
             move_indices: Array of indices into from_squares, to_squares, etc.
+                Accepts any integer dtype; int64 is optimal (avoids conversion).
 
         Returns:
             Array of game indices (same shape as input)
