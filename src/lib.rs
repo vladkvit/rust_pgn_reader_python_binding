@@ -1,16 +1,16 @@
-use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
+use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
 use arrow_array::{Array, LargeStringArray, StringArray};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use pyo3::prelude::*;
 use pyo3::types::PySlice;
 use pyo3_arrow::PyChunkedArray;
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use shakmaty::fen::Fen;
+use rayon::prelude::*;
 use shakmaty::CastlingMode;
 use shakmaty::Color;
-use shakmaty::{uci::UciMove, Chess, Position, Role, Square};
+use shakmaty::fen::Fen;
+use shakmaty::{Chess, Position, Role, Square, uci::UciMove};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::ControlFlow;
@@ -620,7 +620,7 @@ impl ParsedGames {
     #[getter]
     fn num_moves(&self, py: Python<'_>) -> PyResult<usize> {
         let offsets = self.move_offsets.bind(py);
-        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
         let len = offsets.len();
         if len == 0 {
             return Ok(0);
@@ -634,7 +634,7 @@ impl ParsedGames {
     #[getter]
     fn num_positions(&self, py: Python<'_>) -> PyResult<usize> {
         let offsets = self.position_offsets.bind(py);
-        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
         let len = offsets.len();
         if len == 0 {
             return Ok(0);
@@ -668,7 +668,7 @@ impl ParsedGames {
         }
 
         // Handle slice
-        if let Ok(slice) = idx.downcast::<PySlice>() {
+        if let Ok(slice) = idx.cast::<PySlice>() {
             let indices = slice.indices(n_games as isize)?;
             let start = indices.start as usize;
             let stop = indices.stop as usize;
@@ -715,7 +715,7 @@ impl ParsedGames {
         position_indices: &Bound<'py, PyArray1<i64>>,
     ) -> PyResult<Py<PyArray1<i64>>> {
         let offsets = self.position_offsets.bind(py);
-        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
 
         // Get numpy module for searchsorted
         let numpy = py.import("numpy")?;
@@ -755,7 +755,7 @@ impl ParsedGames {
         move_indices: &Bound<'py, PyArray1<i64>>,
     ) -> PyResult<Py<PyArray1<i64>>> {
         let offsets = self.move_offsets.bind(py);
-        let offsets: &Bound<'_, PyArray1<u32>> = offsets.downcast()?;
+        let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
 
         let numpy = py.import("numpy")?;
         let len = offsets.len();
@@ -823,9 +823,9 @@ impl PyGameView {
         let borrowed = data.borrow(py);
 
         let move_offsets = borrowed.move_offsets.bind(py);
-        let move_offsets: &Bound<'_, PyArray1<u32>> = move_offsets.downcast()?;
+        let move_offsets: &Bound<'_, PyArray1<u32>> = move_offsets.cast()?;
         let pos_offsets = borrowed.position_offsets.bind(py);
-        let pos_offsets: &Bound<'_, PyArray1<u32>> = pos_offsets.downcast()?;
+        let pos_offsets: &Bound<'_, PyArray1<u32>> = pos_offsets.cast()?;
 
         // SAFETY: idx is validated by caller, and idx+1 is within bounds due to offset array structure
         let move_start = unsafe { *move_offsets.uget([idx]) } as usize;
@@ -995,7 +995,7 @@ impl PyGameView {
     fn is_checkmate(&self, py: Python<'_>) -> PyResult<bool> {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.is_checkmate.bind(py);
-        let arr: &Bound<'_, PyArray1<bool>> = arr.downcast()?;
+        let arr: &Bound<'_, PyArray1<bool>> = arr.cast()?;
         // SAFETY: idx is validated during construction
         Ok(unsafe { *arr.uget([self.idx]) })
     }
@@ -1005,7 +1005,7 @@ impl PyGameView {
     fn is_stalemate(&self, py: Python<'_>) -> PyResult<bool> {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.is_stalemate.bind(py);
-        let arr: &Bound<'_, PyArray1<bool>> = arr.downcast()?;
+        let arr: &Bound<'_, PyArray1<bool>> = arr.cast()?;
         Ok(unsafe { *arr.uget([self.idx]) })
     }
 
@@ -1014,7 +1014,7 @@ impl PyGameView {
     fn is_insufficient(&self, py: Python<'_>) -> PyResult<(bool, bool)> {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.is_insufficient.bind(py);
-        let arr: &Bound<'_, PyArray2<bool>> = arr.downcast()?;
+        let arr: &Bound<'_, PyArray2<bool>> = arr.cast()?;
         // SAFETY: idx is validated during construction
         let white = unsafe { *arr.uget([self.idx, 0]) };
         let black = unsafe { *arr.uget([self.idx, 1]) };
@@ -1026,7 +1026,7 @@ impl PyGameView {
     fn legal_move_count(&self, py: Python<'_>) -> PyResult<u16> {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.legal_move_count.bind(py);
-        let arr: &Bound<'_, PyArray1<u16>> = arr.downcast()?;
+        let arr: &Bound<'_, PyArray1<u16>> = arr.cast()?;
         Ok(unsafe { *arr.uget([self.idx]) })
     }
 
@@ -1035,7 +1035,7 @@ impl PyGameView {
     fn is_valid(&self, py: Python<'_>) -> PyResult<bool> {
         let borrowed = self.data.borrow(py);
         let arr = borrowed.valid.bind(py);
-        let arr: &Bound<'_, PyArray1<bool>> = arr.downcast()?;
+        let arr: &Bound<'_, PyArray1<bool>> = arr.cast()?;
         Ok(unsafe { *arr.uget([self.idx]) })
     }
 
@@ -1053,11 +1053,11 @@ impl PyGameView {
 
         let borrowed = self.data.borrow(py);
         let from_arr = borrowed.from_squares.bind(py);
-        let from_arr: &Bound<'_, PyArray1<u8>> = from_arr.downcast()?;
+        let from_arr: &Bound<'_, PyArray1<u8>> = from_arr.cast()?;
         let to_arr = borrowed.to_squares.bind(py);
-        let to_arr: &Bound<'_, PyArray1<u8>> = to_arr.downcast()?;
+        let to_arr: &Bound<'_, PyArray1<u8>> = to_arr.cast()?;
         let promo_arr = borrowed.promotions.bind(py);
-        let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.downcast()?;
+        let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.cast()?;
 
         let abs_idx = self.move_start + move_idx;
         // SAFETY: we validated move_idx above and abs_idx is within bounds

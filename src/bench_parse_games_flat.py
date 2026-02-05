@@ -13,7 +13,6 @@ If no parquet file is provided, synthetic PGN data will be generated.
 """
 
 import sys
-import os
 import time
 import argparse
 from typing import Optional
@@ -22,13 +21,6 @@ import numpy as np
 import pyarrow as pa
 
 import rust_pgn_reader_python_binding as pgn
-
-# Add python directory to path for wrapper imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
-from wrapper import add_ergonomic_methods
-
-# Patch ParsedGames with ergonomic methods
-add_ergonomic_methods(pgn.ParsedGames)
 
 
 def generate_synthetic_pgns(num_games: int, moves_per_game: int = 40) -> list[str]:
