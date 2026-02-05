@@ -1,10 +1,8 @@
 import unittest
-import sys
-import os
 import numpy as np
 
 import rust_pgn_reader_python_binding
-from rust_pgn_reader_python_binding import PyGameView
+from rust_pgn_reader_python_binding import PyGameView  # for a typing check
 
 import pyarrow as pa
 
