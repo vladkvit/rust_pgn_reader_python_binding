@@ -1,10 +1,7 @@
 //! Benchmark for PGN parsing APIs, designed to mirror the Python workflow.
 //!
-//! This benchmark emulates the call graph of:
-//! - `parse_game_moves_arrow_chunked_array()` (Arrow API → Vec<MoveExtractor>)
-//! - `parse_games_flat()` (Flat API → FlatBuffers with NumPy-like arrays)
-//!
-//! Both use zero-copy &str slices from Arrow StringArrays, matching Python's behavior.
+//! `cargo bench --bench parquet_bench`
+//! `samply record --rate 10000 cargo bench --bench parquet_bench`
 
 use arrow::array::{Array, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
