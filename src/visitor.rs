@@ -60,26 +60,26 @@ impl MoveExtractor {
     #[pyo3(signature = (store_legal_moves = false, store_board_states = false))]
     pub fn new(store_legal_moves: bool, store_board_states: bool) -> MoveExtractor {
         MoveExtractor {
-            moves: Vec::with_capacity(50), // Tuned: avg game ~40-50 moves
+            moves: Vec::with_capacity(100),
             store_legal_moves,
             store_board_states,
-            flat_legal_moves: Vec::with_capacity(if store_legal_moves { 50 * 30 } else { 0 }),
-            legal_moves_offsets: Vec::with_capacity(if store_legal_moves { 50 } else { 0 }),
+            flat_legal_moves: Vec::with_capacity(if store_legal_moves { 100 * 30 } else { 0 }),
+            legal_moves_offsets: Vec::with_capacity(if store_legal_moves { 100 } else { 0 }),
             pos: Chess::default(),
             valid_moves: true,
-            comments: Vec::new(),    // Lazy: will grow on demand
-            evals: Vec::new(),       // Lazy: will grow on demand
-            clock_times: Vec::new(), // Lazy: will grow on demand
+            comments: Vec::with_capacity(100),
+            evals: Vec::with_capacity(100),
+            clock_times: Vec::with_capacity(100),
             outcome: None,
             headers: Vec::with_capacity(10),
-            castling_rights: Vec::new(), // Lazy: will grow on demand
+            castling_rights: Vec::with_capacity(100),
             position_status: None,
             // Only pre-allocate if storing board states
-            board_states: Vec::with_capacity(if store_board_states { 50 * 64 } else { 0 }),
-            en_passant_states: Vec::with_capacity(if store_board_states { 50 } else { 0 }),
-            halfmove_clocks: Vec::with_capacity(if store_board_states { 50 } else { 0 }),
-            turn_states: Vec::with_capacity(if store_board_states { 50 } else { 0 }),
-            castling_states: Vec::with_capacity(if store_board_states { 50 * 4 } else { 0 }),
+            board_states: Vec::with_capacity(if store_board_states { 100 * 64 } else { 0 }),
+            en_passant_states: Vec::with_capacity(if store_board_states { 100 } else { 0 }),
+            halfmove_clocks: Vec::with_capacity(if store_board_states { 100 } else { 0 }),
+            turn_states: Vec::with_capacity(if store_board_states { 100 } else { 0 }),
+            castling_states: Vec::with_capacity(if store_board_states { 100 * 4 } else { 0 }),
         }
     }
 
