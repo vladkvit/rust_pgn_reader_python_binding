@@ -453,11 +453,15 @@ mod pyucimove_tests {
         let extractor = result.unwrap();
         assert_eq!(extractor.moves.len(), 4);
         // 5 positions: initial + 4 moves
-        assert_eq!(extractor.board_states.len(), 5 * 64);
-        assert_eq!(extractor.en_passant_states.len(), 5);
-        assert_eq!(extractor.halfmove_clocks.len(), 5);
-        assert_eq!(extractor.turn_states.len(), 5);
-        assert_eq!(extractor.castling_states.len(), 5 * 4);
+        let data = extractor
+            .board_state_data
+            .as_ref()
+            .expect("board_state_data should be Some");
+        assert_eq!(data.board_states.len(), 5 * 64);
+        assert_eq!(data.en_passant_states.len(), 5);
+        assert_eq!(data.halfmove_clocks.len(), 5);
+        assert_eq!(data.turn_states.len(), 5);
+        assert_eq!(data.castling_states.len(), 5 * 4);
     }
 
     #[test]
@@ -468,11 +472,7 @@ mod pyucimove_tests {
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert_eq!(extractor.moves.len(), 4);
-        // Board state vectors should be empty
-        assert_eq!(extractor.board_states.len(), 0);
-        assert_eq!(extractor.en_passant_states.len(), 0);
-        assert_eq!(extractor.halfmove_clocks.len(), 0);
-        assert_eq!(extractor.turn_states.len(), 0);
-        assert_eq!(extractor.castling_states.len(), 0);
+        // Board state data should be None when disabled
+        assert!(extractor.board_state_data.is_none());
     }
 }

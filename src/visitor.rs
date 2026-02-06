@@ -8,6 +8,37 @@ use pyo3::prelude::*;
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position};
 use std::ops::ControlFlow;
 
+/// Board state tracking for flat output.
+/// Only allocated when store_board_states is true to avoid overhead in the common case.
+#[derive(Default)]
+pub struct BoardStateData {
+    pub board_states: Vec<u8>,      // Flattened: 64 bytes per position
+    pub en_passant_states: Vec<i8>, // Per position: -1 or file 0-7
+    pub halfmove_clocks: Vec<u8>,   // Per position
+    pub turn_states: Vec<bool>,     // Per position: true=white
+    pub castling_states: Vec<bool>, // Flattened: 4 bools per position [K,Q,k,q]
+}
+
+impl BoardStateData {
+    pub fn with_capacity(estimated_positions: usize) -> Self {
+        BoardStateData {
+            board_states: Vec::with_capacity(estimated_positions * 64),
+            en_passant_states: Vec::with_capacity(estimated_positions),
+            halfmove_clocks: Vec::with_capacity(estimated_positions),
+            turn_states: Vec::with_capacity(estimated_positions),
+            castling_states: Vec::with_capacity(estimated_positions * 4),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.board_states.clear();
+        self.en_passant_states.clear();
+        self.halfmove_clocks.clear();
+        self.turn_states.clear();
+        self.castling_states.clear();
+    }
+}
+
 #[pyclass]
 /// A Visitor to extract SAN moves and comments from PGN movetext
 pub struct MoveExtractor {
@@ -15,7 +46,6 @@ pub struct MoveExtractor {
     pub moves: Vec<PyUciMove>,
 
     pub store_legal_moves: bool,
-    pub store_board_states: bool,
     pub flat_legal_moves: Vec<PyUciMove>,
     pub legal_moves_offsets: Vec<usize>,
 
@@ -46,12 +76,8 @@ pub struct MoveExtractor {
     pub pos: Chess,
 
     // Board state tracking for flat output (not directly exposed to Python)
-    // Only populated if store_board_states is true
-    pub board_states: Vec<u8>,      // Flattened: 64 bytes per position
-    pub en_passant_states: Vec<i8>, // Per position: -1 or file 0-7
-    pub halfmove_clocks: Vec<u8>,   // Per position
-    pub turn_states: Vec<bool>,     // Per position: true=white
-    pub castling_states: Vec<bool>, // Flattened: 4 bools per position [K,Q,k,q]
+    // Only allocated if store_board_states is true to avoid overhead
+    pub board_state_data: Option<Box<BoardStateData>>,
 }
 
 #[pymethods]
@@ -62,7 +88,6 @@ impl MoveExtractor {
         MoveExtractor {
             moves: Vec::with_capacity(100),
             store_legal_moves,
-            store_board_states,
             flat_legal_moves: Vec::with_capacity(if store_legal_moves { 100 * 30 } else { 0 }),
             legal_moves_offsets: Vec::with_capacity(if store_legal_moves { 100 } else { 0 }),
             pos: Chess::default(),
@@ -74,13 +99,18 @@ impl MoveExtractor {
             headers: Vec::with_capacity(10),
             castling_rights: Vec::with_capacity(100),
             position_status: None,
-            // Only pre-allocate if storing board states
-            board_states: Vec::with_capacity(if store_board_states { 100 * 64 } else { 0 }),
-            en_passant_states: Vec::with_capacity(if store_board_states { 100 } else { 0 }),
-            halfmove_clocks: Vec::with_capacity(if store_board_states { 100 } else { 0 }),
-            turn_states: Vec::with_capacity(if store_board_states { 100 } else { 0 }),
-            castling_states: Vec::with_capacity(if store_board_states { 100 * 4 } else { 0 }),
+            // Only allocate board state data when needed to avoid overhead
+            board_state_data: if store_board_states {
+                Some(Box::new(BoardStateData::with_capacity(100)))
+            } else {
+                None
+            },
         }
+    }
+
+    /// Check if board states are being stored.
+    pub fn stores_board_states(&self) -> bool {
+        self.board_state_data.is_some()
     }
 
     fn turn(&self) -> bool {
@@ -128,13 +158,15 @@ impl MoveExtractor {
 
     /// Record current board state to flat arrays for ParsedGames output.
     fn push_board_state(&mut self) {
-        self.board_states
-            .extend_from_slice(&serialize_board(&self.pos));
-        self.en_passant_states.push(get_en_passant_file(&self.pos));
-        self.halfmove_clocks.push(get_halfmove_clock(&self.pos));
-        self.turn_states.push(get_turn(&self.pos));
-        let castling = get_castling_rights(&self.pos);
-        self.castling_states.extend_from_slice(&castling);
+        if let Some(ref mut data) = self.board_state_data {
+            data.board_states
+                .extend_from_slice(&serialize_board(&self.pos));
+            data.en_passant_states.push(get_en_passant_file(&self.pos));
+            data.halfmove_clocks.push(get_halfmove_clock(&self.pos));
+            data.turn_states.push(get_turn(&self.pos));
+            let castling = get_castling_rights(&self.pos);
+            data.castling_states.extend_from_slice(&castling);
+        }
     }
 
     fn update_position_status(&mut self) {
@@ -209,11 +241,9 @@ impl Visitor for MoveExtractor {
         self.evals.clear();
         self.clock_times.clear();
         self.castling_rights.clear();
-        self.board_states.clear();
-        self.en_passant_states.clear();
-        self.halfmove_clocks.clear();
-        self.turn_states.clear();
-        self.castling_states.clear();
+        if let Some(ref mut data) = self.board_state_data {
+            data.clear();
+        }
 
         // Determine castling mode from Variant header (case-insensitive)
         let castling_mode = self
@@ -262,7 +292,7 @@ impl Visitor for MoveExtractor {
             self.push_legal_moves();
         }
         // Record initial board state for flat output (only if enabled)
-        if self.store_board_states {
+        if self.board_state_data.is_some() {
             self.push_board_state();
         }
         ControlFlow::Continue(())
@@ -283,7 +313,7 @@ impl Visitor for MoveExtractor {
                         self.push_legal_moves();
                     }
                     // Record board state after move for flat output (only if enabled)
-                    if self.store_board_states {
+                    if self.board_state_data.is_some() {
                         self.push_board_state();
                     }
                     let uci_move_obj = UciMove::from_standard(m);
