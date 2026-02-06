@@ -15,6 +15,7 @@ pub struct MoveExtractor {
     pub moves: Vec<PyUciMove>,
 
     pub store_legal_moves: bool,
+    pub store_board_states: bool,
     pub flat_legal_moves: Vec<PyUciMove>,
     pub legal_moves_offsets: Vec<usize>,
 
@@ -45,6 +46,7 @@ pub struct MoveExtractor {
     pub pos: Chess,
 
     // Board state tracking for flat output (not directly exposed to Python)
+    // Only populated if store_board_states is true
     pub board_states: Vec<u8>,      // Flattened: 64 bytes per position
     pub en_passant_states: Vec<i8>, // Per position: -1 or file 0-7
     pub halfmove_clocks: Vec<u8>,   // Per position
@@ -55,27 +57,29 @@ pub struct MoveExtractor {
 #[pymethods]
 impl MoveExtractor {
     #[new]
-    #[pyo3(signature = (store_legal_moves = false))]
-    pub fn new(store_legal_moves: bool) -> MoveExtractor {
+    #[pyo3(signature = (store_legal_moves = false, store_board_states = false))]
+    pub fn new(store_legal_moves: bool, store_board_states: bool) -> MoveExtractor {
         MoveExtractor {
-            moves: Vec::with_capacity(100),
+            moves: Vec::with_capacity(50), // Tuned: avg game ~40-50 moves
             store_legal_moves,
-            flat_legal_moves: Vec::with_capacity(if store_legal_moves { 100 * 30 } else { 0 }), // Pre-allocate for moves
-            legal_moves_offsets: Vec::with_capacity(if store_legal_moves { 100 } else { 0 }), // Pre-allocate for offsets
+            store_board_states,
+            flat_legal_moves: Vec::with_capacity(if store_legal_moves { 50 * 30 } else { 0 }),
+            legal_moves_offsets: Vec::with_capacity(if store_legal_moves { 50 } else { 0 }),
             pos: Chess::default(),
             valid_moves: true,
-            comments: Vec::with_capacity(100),
-            evals: Vec::with_capacity(100),
-            clock_times: Vec::with_capacity(100),
+            comments: Vec::new(),    // Lazy: will grow on demand
+            evals: Vec::new(),       // Lazy: will grow on demand
+            clock_times: Vec::new(), // Lazy: will grow on demand
             outcome: None,
             headers: Vec::with_capacity(10),
-            castling_rights: Vec::with_capacity(100),
+            castling_rights: Vec::new(), // Lazy: will grow on demand
             position_status: None,
-            board_states: Vec::with_capacity(100 * 64),
-            en_passant_states: Vec::with_capacity(100),
-            halfmove_clocks: Vec::with_capacity(100),
-            turn_states: Vec::with_capacity(100),
-            castling_states: Vec::with_capacity(100 * 4),
+            // Only pre-allocate if storing board states
+            board_states: Vec::with_capacity(if store_board_states { 50 * 64 } else { 0 }),
+            en_passant_states: Vec::with_capacity(if store_board_states { 50 } else { 0 }),
+            halfmove_clocks: Vec::with_capacity(if store_board_states { 50 } else { 0 }),
+            turn_states: Vec::with_capacity(if store_board_states { 50 } else { 0 }),
+            castling_states: Vec::with_capacity(if store_board_states { 50 * 4 } else { 0 }),
         }
     }
 
@@ -257,8 +261,10 @@ impl Visitor for MoveExtractor {
         if self.store_legal_moves {
             self.push_legal_moves();
         }
-        // Record initial board state for flat output
-        self.push_board_state();
+        // Record initial board state for flat output (only if enabled)
+        if self.store_board_states {
+            self.push_board_state();
+        }
         ControlFlow::Continue(())
     }
 
@@ -276,8 +282,10 @@ impl Visitor for MoveExtractor {
                     if self.store_legal_moves {
                         self.push_legal_moves();
                     }
-                    // Record board state after move for flat output
-                    self.push_board_state();
+                    // Record board state after move for flat output (only if enabled)
+                    if self.store_board_states {
+                        self.push_board_state();
+                    }
                     let uci_move_obj = UciMove::from_standard(m);
 
                     match uci_move_obj {

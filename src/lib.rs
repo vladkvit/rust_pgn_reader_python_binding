@@ -20,17 +20,25 @@ pub use visitor::MoveExtractor;
 
 /// Parse games from Arrow chunked array into flat NumPy arrays.
 ///
-/// This implementation uses thread-local FlatBuffers that are merged after
-/// parallel parsing, avoiding the overhead of per-game Vec allocations
-/// followed by a sequential copy loop.
+/// This implementation uses explicit chunking with a fixed number of chunks
+/// (num_chunks = num_threads * chunk_multiplier) to avoid the allocation storm
+/// caused by Rayon's dynamic work-stealing with fold_with.
+///
+/// Each chunk gets exactly one FlatBuffers instance, drastically reducing
+/// the number of allocations and making merge_all much faster.
 #[pyfunction]
-#[pyo3(signature = (pgn_chunked_array, num_threads=None))]
+#[pyo3(signature = (pgn_chunked_array, num_threads=None, chunk_multiplier=None))]
 fn parse_games_flat(
     py: Python<'_>,
     pgn_chunked_array: PyChunkedArray,
     num_threads: Option<usize>,
+    chunk_multiplier: Option<usize>,
 ) -> PyResult<ParsedGames> {
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
+    // Default multiplier of 1 means exactly num_threads chunks (one per thread).
+    // Higher values (e.g., 4) create more chunks for better load balancing
+    // at the cost of more buffers to merge.
+    let chunk_multiplier = chunk_multiplier.unwrap_or(1);
 
     // Extract PGN strings from Arrow chunks
     let mut num_elements = 0;
@@ -61,6 +69,9 @@ fn parse_games_flat(
     }
 
     let n_games = pgn_str_slices.len();
+    if n_games == 0 {
+        return flat_buffers_to_parsed_games(py, FlatBuffers::default());
+    }
 
     // Build thread pool
     let thread_pool = ThreadPoolBuilder::new()
@@ -73,28 +84,34 @@ fn parse_games_flat(
             ))
         })?;
 
-    // Estimate capacity: ~70 moves per game
-    let games_per_thread = (n_games + num_threads - 1) / num_threads;
+    // Calculate chunk size for explicit chunking.
+    // num_chunks = num_threads * chunk_multiplier (e.g., 16 threads * 1 = 16 chunks)
+    let num_chunks = num_threads * chunk_multiplier;
+    let chunk_size = (n_games + num_chunks - 1) / num_chunks; // ceiling division
+    let chunk_size = chunk_size.max(1); // ensure at least 1 game per chunk
+
+    // Estimate capacity per chunk
+    let games_per_chunk = chunk_size;
     let moves_per_game = 70;
 
-    // Parse in parallel using fold_with for thread-local buffer accumulation.
-    // fold_with gives each worker thread its own FlatBuffers instance to accumulate into.
-    // This is more efficient than fold() which creates buffers per work-stealing chunk.
-    let thread_results: Vec<FlatBuffers> = thread_pool.install(|| {
+    // Parse in parallel using par_chunks for explicit, fixed-size chunking.
+    // This creates exactly ceil(n_games / chunk_size) FlatBuffers instances,
+    // avoiding the allocation storm from Rayon's dynamic work-stealing.
+    let chunk_results: Vec<FlatBuffers> = thread_pool.install(|| {
         pgn_str_slices
-            .par_iter()
-            .fold_with(
-                FlatBuffers::with_capacity(games_per_thread, moves_per_game),
-                |mut buffers, &pgn| {
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut buffers = FlatBuffers::with_capacity(games_per_chunk, moves_per_game);
+                for &pgn in chunk {
                     let _ = parse_game_to_flat(pgn, &mut buffers);
-                    buffers
-                },
-            )
+                }
+                buffers
+            })
             .collect()
     });
 
-    // Merge all thread-local buffers with pre-allocation (avoids repeated reallocations)
-    let combined_buffers = FlatBuffers::merge_all(thread_results);
+    // Merge all chunk buffers with pre-allocation (avoids repeated reallocations)
+    let combined_buffers = FlatBuffers::merge_all(chunk_results);
 
     // Convert FlatBuffers to ParsedGames with NumPy arrays
     flat_buffers_to_parsed_games(py, combined_buffers)
@@ -180,9 +197,10 @@ fn flat_buffers_to_parsed_games(py: Python<'_>, buffers: FlatBuffers) -> PyResul
 pub fn parse_single_game_native(
     pgn: &str,
     store_legal_moves: bool,
+    store_board_states: bool,
 ) -> Result<MoveExtractor, String> {
     let mut reader = Reader::new(Cursor::new(pgn));
-    let mut extractor = MoveExtractor::new(store_legal_moves);
+    let mut extractor = MoveExtractor::new(store_legal_moves, store_board_states);
     match reader.read_game(&mut extractor) {
         Ok(Some(_)) => Ok(extractor),
         Ok(None) => Err("No game found in PGN".to_string()),
@@ -194,6 +212,7 @@ pub fn parse_multiple_games_native(
     pgns: &Vec<String>,
     num_threads: Option<usize>,
     store_legal_moves: bool,
+    store_board_states: bool,
 ) -> Result<Vec<MoveExtractor>, String> {
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
 
@@ -205,7 +224,7 @@ pub fn parse_multiple_games_native(
 
     thread_pool.install(|| {
         pgns.par_iter()
-            .map(|pgn| parse_single_game_native(pgn, store_legal_moves))
+            .map(|pgn| parse_single_game_native(pgn, store_legal_moves, store_board_states))
             .collect()
     })
 }
@@ -214,6 +233,7 @@ fn _parse_game_moves_from_arrow_chunks_native(
     pgn_chunked_array: &PyChunkedArray,
     num_threads: Option<usize>,
     store_legal_moves: bool,
+    store_board_states: bool,
 ) -> Result<Vec<MoveExtractor>, String> {
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
     let thread_pool = ThreadPoolBuilder::new()
@@ -250,7 +270,7 @@ fn _parse_game_moves_from_arrow_chunks_native(
     thread_pool.install(|| {
         pgn_str_slices
             .par_iter()
-            .map(|&pgn_s| parse_single_game_native(pgn_s, store_legal_moves))
+            .map(|&pgn_s| parse_single_game_native(pgn_s, store_legal_moves, store_board_states))
             .collect::<Result<Vec<MoveExtractor>, String>>()
     })
 }
@@ -259,34 +279,45 @@ fn _parse_game_moves_from_arrow_chunks_native(
 // TODO check if I can call py.allow_threads and release GIL
 // see https://docs.rs/pyo3-arrow/0.10.1/pyo3_arrow/
 #[pyfunction]
-#[pyo3(signature = (pgn, store_legal_moves = false))]
+#[pyo3(signature = (pgn, store_legal_moves = false, store_board_states = false))]
 /// Parses a single PGN game string.
-fn parse_game(pgn: &str, store_legal_moves: bool) -> PyResult<MoveExtractor> {
-    parse_single_game_native(pgn, store_legal_moves)
+fn parse_game(
+    pgn: &str,
+    store_legal_moves: bool,
+    store_board_states: bool,
+) -> PyResult<MoveExtractor> {
+    parse_single_game_native(pgn, store_legal_moves, store_board_states)
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// In parallel, parse a set of games
 #[pyfunction]
-#[pyo3(signature = (pgns, num_threads=None, store_legal_moves=false))]
+#[pyo3(signature = (pgns, num_threads=None, store_legal_moves=false, store_board_states=false))]
 fn parse_games(
     pgns: Vec<String>,
     num_threads: Option<usize>,
     store_legal_moves: bool,
+    store_board_states: bool,
 ) -> PyResult<Vec<MoveExtractor>> {
-    parse_multiple_games_native(&pgns, num_threads, store_legal_moves)
+    parse_multiple_games_native(&pgns, num_threads, store_legal_moves, store_board_states)
         .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 #[pyfunction]
-#[pyo3(signature = (pgn_chunked_array, num_threads=None, store_legal_moves=false))]
+#[pyo3(signature = (pgn_chunked_array, num_threads=None, store_legal_moves=false, store_board_states=false))]
 fn parse_game_moves_arrow_chunked_array(
     pgn_chunked_array: PyChunkedArray,
     num_threads: Option<usize>,
     store_legal_moves: bool,
+    store_board_states: bool,
 ) -> PyResult<Vec<MoveExtractor>> {
-    _parse_game_moves_from_arrow_chunks_native(&pgn_chunked_array, num_threads, store_legal_moves)
-        .map_err(pyo3::exceptions::PyValueError::new_err)
+    _parse_game_moves_from_arrow_chunks_native(
+        &pgn_chunked_array,
+        num_threads,
+        store_legal_moves,
+        store_board_states,
+    )
+    .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// Parser for chess PGN notation
@@ -312,7 +343,7 @@ mod pyucimove_tests {
     #[test]
     fn test_parse_game_without_headers() {
         let pgn = "1. Nf3 d5 2. e4 c5 3. exd5 e5 4. dxe6 0-1";
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert_eq!(extractor.moves.len(), 7);
@@ -325,7 +356,7 @@ mod pyucimove_tests {
         let pgn = r#"[FEN "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
 
 3. Bb5 a6 4. Ba4 Nf6 1-0"#;
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert!(extractor.valid_moves, "Moves should be valid");
@@ -339,7 +370,7 @@ mod pyucimove_tests {
 [FEN "brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1"]
 
 1. g3 d5 2. d4 g6 3. b3 Nf6 1-0"#;
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert!(
@@ -356,7 +387,7 @@ mod pyucimove_tests {
 [FEN "brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1"]
 
 1. g3 d5 1-0"#;
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert!(
@@ -371,7 +402,7 @@ mod pyucimove_tests {
         let pgn = r#"[FEN "invalid fen string"]
 
 1. e4 e5 1-0"#;
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert!(
@@ -386,7 +417,7 @@ mod pyucimove_tests {
         let pgn = r#"[fen "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
 
 3. Bb5 1-0"#;
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert!(
@@ -403,7 +434,7 @@ mod pyucimove_tests {
     [FEN "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"]
 
     3... a6 4. Ba4 Nf6 5. O-O Be7 1-0"#;
-        let result = parse_single_game_native(pgn, false);
+        let result = parse_single_game_native(pgn, false, false);
         assert!(result.is_ok());
         let extractor = result.unwrap();
         assert!(
@@ -411,5 +442,37 @@ mod pyucimove_tests {
             "Standard game with custom FEN should be valid"
         );
         assert_eq!(extractor.moves.len(), 5); // a6, Ba4, Nf6, O-O, Be7
+    }
+
+    #[test]
+    fn test_parse_game_with_board_states() {
+        // Test that board states are populated when enabled
+        let pgn = "1. e4 e5 2. Nf3 Nc6 1-0";
+        let result = parse_single_game_native(pgn, false, true);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert_eq!(extractor.moves.len(), 4);
+        // 5 positions: initial + 4 moves
+        assert_eq!(extractor.board_states.len(), 5 * 64);
+        assert_eq!(extractor.en_passant_states.len(), 5);
+        assert_eq!(extractor.halfmove_clocks.len(), 5);
+        assert_eq!(extractor.turn_states.len(), 5);
+        assert_eq!(extractor.castling_states.len(), 5 * 4);
+    }
+
+    #[test]
+    fn test_parse_game_without_board_states() {
+        // Test that board states are NOT populated when disabled
+        let pgn = "1. e4 e5 2. Nf3 Nc6 1-0";
+        let result = parse_single_game_native(pgn, false, false);
+        assert!(result.is_ok());
+        let extractor = result.unwrap();
+        assert_eq!(extractor.moves.len(), 4);
+        // Board state vectors should be empty
+        assert_eq!(extractor.board_states.len(), 0);
+        assert_eq!(extractor.en_passant_states.len(), 0);
+        assert_eq!(extractor.halfmove_clocks.len(), 0);
+        assert_eq!(extractor.turn_states.len(), 0);
+        assert_eq!(extractor.castling_states.len(), 0);
     }
 }

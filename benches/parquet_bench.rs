@@ -18,6 +18,11 @@ use rust_pgn_reader_python_binding::{parse_game_to_flat, parse_single_game_nativ
 
 const FILE_PATH: &str = "2013-07-train-00000-of-00001.parquet";
 
+/// Chunk multiplier for explicit chunking in Flat API.
+/// 1 = exactly num_threads chunks (minimal merge overhead)
+/// Higher values provide better load balancing at cost of more buffers to merge.
+const CHUNK_MULTIPLIER: usize = 1;
+
 /// Read parquet file and return the raw Arrow StringArrays.
 /// This preserves Arrow's memory layout for zero-copy string access.
 fn read_parquet_to_string_arrays(file_path: &str) -> Vec<StringArray> {
@@ -70,13 +75,17 @@ fn extract_str_slices<'a>(arrays: &'a [StringArray]) -> Vec<&'a str> {
 /// 1. Read parquet to Arrow arrays
 /// 2. Extract &str slices from StringArray (like the Python-bound function does)
 /// 3. Parse each game in parallel → Vec<MoveExtractor>
-pub fn bench_arrow_api() {
+///
+/// Args:
+/// - store_board_states: Whether to populate board state vectors (for benchmarking overhead)
+pub fn bench_arrow_api(store_board_states: bool) {
     // Step 1: Read parquet to Arrow StringArrays
     let arrays = read_parquet_to_string_arrays(FILE_PATH);
 
     // Step 2: Extract &str slices (zero-copy, mirrors Arrow chunk iteration)
     let pgn_slices = extract_str_slices(&arrays);
     println!("Read {} games from parquet.", pgn_slices.len());
+    println!("store_board_states: {}", store_board_states);
 
     // Step 3: Build thread pool (same pattern as lib.rs)
     let num_threads = num_cpus::get();
@@ -93,7 +102,7 @@ pub fn bench_arrow_api() {
         .install(|| {
             pgn_slices
                 .par_iter()
-                .map(|&pgn| parse_single_game_native(pgn, false))
+                .map(|&pgn| parse_single_game_native(pgn, false, store_board_states))
                 .collect::<Result<Vec<_>, _>>()
         })
         .expect("Parsing failed");
@@ -115,7 +124,7 @@ pub fn bench_arrow_api() {
 /// This mirrors `parse_games_flat()` from Python:
 /// 1. Read parquet to Arrow arrays
 /// 2. Extract &str slices from StringArray
-/// 3. Parse in parallel with fold_with → thread-local FlatBuffers
+/// 3. Parse in parallel with explicit chunking (par_chunks) → fixed number of FlatBuffers
 /// 4. Merge all FlatBuffers into one
 pub fn bench_flat_api() {
     // Step 1: Read parquet to Arrow StringArrays
@@ -128,36 +137,48 @@ pub fn bench_flat_api() {
     // Step 3: Build thread pool and compute capacity estimates
     let num_threads = num_cpus::get();
     let n_games = pgn_slices.len();
-    let games_per_thread = (n_games + num_threads - 1) / num_threads;
     let moves_per_game = 70; // Estimate ~70 moves per game
+
+    // Calculate chunk size for explicit chunking
+    let num_chunks = num_threads * CHUNK_MULTIPLIER;
+    let chunk_size = (n_games + num_chunks - 1) / num_chunks; // ceiling division
+    let chunk_size = chunk_size.max(1);
+    let games_per_chunk = chunk_size;
+
+    println!(
+        "Using {} threads, {} chunks, {} games/chunk",
+        num_threads, num_chunks, games_per_chunk
+    );
 
     let thread_pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
         .expect("Failed to build Rayon thread pool");
 
-    // Step 4: Parse in parallel using fold_with for thread-local buffer accumulation
-    // This is exactly the pattern used in parse_games_flat() in lib.rs
+    // Step 4: Parse in parallel using par_chunks for explicit, fixed-size chunking
+    // This creates exactly ceil(n_games / chunk_size) FlatBuffers instances,
+    // avoiding the allocation storm from Rayon's dynamic work-stealing.
     let start = Instant::now();
 
-    let thread_results: Vec<FlatBuffers> = thread_pool.install(|| {
+    let chunk_results: Vec<FlatBuffers> = thread_pool.install(|| {
         pgn_slices
-            .par_iter()
-            .fold_with(
-                FlatBuffers::with_capacity(games_per_thread, moves_per_game),
-                |mut buffers, &pgn| {
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut buffers = FlatBuffers::with_capacity(games_per_chunk, moves_per_game);
+                for &pgn in chunk {
                     let _ = parse_game_to_flat(pgn, &mut buffers);
-                    buffers
-                },
-            )
+                }
+                buffers
+            })
             .collect()
     });
 
     let duration_parallel = start.elapsed();
     println!("Parallel parsing time: {:?}", duration_parallel);
+    println!("Created {} FlatBuffers to merge", chunk_results.len());
 
-    // Step 5: Merge all thread-local buffers (mirrors parse_games_flat)
-    let combined_buffers = FlatBuffers::merge_all(thread_results);
+    // Step 5: Merge all chunk buffers (mirrors parse_games_flat)
+    let combined_buffers = FlatBuffers::merge_all(chunk_results);
 
     let duration_total = start.elapsed();
     println!("Total time (including merge): {:?}", duration_total);
@@ -169,8 +190,11 @@ pub fn bench_flat_api() {
 }
 
 fn main() {
-    println!("=== Arrow API (MoveExtractor) ===\n");
-    bench_arrow_api();
+    println!("=== Arrow API (MoveExtractor, store_board_states=false) ===\n");
+    bench_arrow_api(false);
+
+    println!("\n=== Arrow API (MoveExtractor, store_board_states=true) ===\n");
+    bench_arrow_api(true);
 
     println!("\n=== Flat API (FlatBuffers) ===\n");
     bench_flat_api();
