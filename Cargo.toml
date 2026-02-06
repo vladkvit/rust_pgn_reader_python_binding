@@ -29,9 +29,5 @@ criterion = "0.8"
 harness = false
 name = "parquet_bench"
 
-[[bin]]
-name = "parquet_bench"
-path = "benches/parquet_bench.rs"
-
 [profile.bench]
 debug = true
