@@ -692,26 +692,34 @@ class TestParsedGamesFlat(unittest.TestCase):
             "1. d4 d5 2. c4 e6 0-1",
         ]
         chunked = pa.chunked_array([pa.array(pgns)])
-        result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
+        # Use 1 thread to get a single chunk for predictable array shapes
+        result = rust_pgn_reader_python_binding.parse_games_flat(chunked, num_threads=1)
 
         # Check game count
         self.assertEqual(len(result), 2)
+        self.assertEqual(result.num_games, 2)
+        self.assertEqual(result.num_moves, 9)
+        self.assertEqual(result.num_positions, 11)  # 9 moves + 2 initial positions
 
-        # Check move offsets
-        self.assertEqual(len(result.move_offsets), 3)
-        self.assertEqual(result.move_offsets[0], 0)
-        self.assertEqual(result.move_offsets[1], 5)  # Game 1: 5 half-moves
-        self.assertEqual(result.move_offsets[2], 9)  # Game 2: 4 half-moves
+        # Check per-game structure via game views
+        game0 = result[0]
+        self.assertEqual(len(game0), 5)  # Game 1: 5 half-moves
+        self.assertEqual(game0.num_positions, 6)
 
-        # Check shapes
+        game1 = result[1]
+        self.assertEqual(len(game1), 4)  # Game 2: 4 half-moves
+        self.assertEqual(game1.num_positions, 5)
+
+        # With 1 thread, all games are in a single chunk
+        self.assertEqual(result.num_chunks, 1)
+        chunk = result.chunks[0]
         total_moves = 9
-        total_positions = 9 + 2  # moves + initial positions
-
-        self.assertEqual(result.boards.shape, (total_positions, 8, 8))
-        self.assertEqual(result.castling.shape, (total_positions, 4))
-        self.assertEqual(result.en_passant.shape, (total_positions,))
-        self.assertEqual(result.from_squares.shape, (total_moves,))
-        self.assertEqual(result.valid.shape, (2,))
+        total_positions = 9 + 2
+        self.assertEqual(chunk.boards.shape, (total_positions, 8, 8))
+        self.assertEqual(chunk.castling.shape, (total_positions, 4))
+        self.assertEqual(chunk.en_passant.shape, (total_positions,))
+        self.assertEqual(chunk.from_squares.shape, (total_moves,))
+        self.assertEqual(chunk.valid.shape, (2,))
 
     def test_initial_board_encoding(self):
         """Test initial board state encoding."""
@@ -719,7 +727,7 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array(pgns)])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
-        initial = result.boards[0]  # First position
+        initial = result[0].initial_board  # First position
 
         # Encoding: 0=empty, 1=P, 2=N, 3=B, 4=R, 5=Q, 6=K, +6 for black
         # Square indexing: a1=0, b1=1, ..., h1=7, a2=8, ...
@@ -746,7 +754,7 @@ class TestParsedGamesFlat(unittest.TestCase):
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
         # Position 0: initial, Position 1: after e4
-        after_e4 = result.boards[1]
+        after_e4 = result[0].boards[1]
 
         # e2 (index 12) should be empty
         self.assertEqual(after_e4.flat[12], 0)
@@ -759,10 +767,11 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array(pgns)])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
+        game = result[0]
         # Initial: no en passant
-        self.assertEqual(result.en_passant[0], -1)
+        self.assertEqual(game.en_passant[0], -1)
         # After e4: en passant on e-file (file index 4)
-        self.assertEqual(result.en_passant[1], 4)
+        self.assertEqual(game.en_passant[1], 4)
 
     def test_castling_rights(self):
         """Test castling rights tracking."""
@@ -771,15 +780,16 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array(pgns)])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
+        game = result[0]
         # Initial: all castling [K, Q, k, q] = [True, True, True, True]
-        self.assertTrue(all(result.castling[0]))
+        self.assertTrue(all(game.castling[0]))
 
         # After Rg1 (position 5): white kingside lost
         # Castling order: [K, Q, k, q]
-        self.assertFalse(result.castling[5, 0])  # White K
-        self.assertTrue(result.castling[5, 1])  # White Q
-        self.assertTrue(result.castling[5, 2])  # Black k
-        self.assertTrue(result.castling[5, 3])  # Black q
+        self.assertFalse(game.castling[5, 0])  # White K
+        self.assertTrue(game.castling[5, 1])  # White Q
+        self.assertTrue(game.castling[5, 2])  # Black k
+        self.assertTrue(game.castling[5, 3])  # Black q
 
     def test_turn_tracking(self):
         """Test side-to-move tracking."""
@@ -787,12 +797,13 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array(pgns)])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
+        game = result[0]
         # Initial: white to move
-        self.assertTrue(result.turn[0])
+        self.assertTrue(game.turn[0])
         # After e4: black to move
-        self.assertFalse(result.turn[1])
+        self.assertFalse(game.turn[1])
         # After e5: white to move
-        self.assertTrue(result.turn[2])
+        self.assertTrue(game.turn[2])
 
     def test_game_view_access(self):
         """Test GameView provides correct slices."""
@@ -897,10 +908,11 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array([pgn])])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
-        self.assertAlmostEqual(result.evals[0], 0.17, places=2)
-        self.assertAlmostEqual(result.evals[1], 0.19, places=2)
-        self.assertAlmostEqual(result.clocks[0], 30.0, places=1)
-        self.assertAlmostEqual(result.clocks[1], 29.0, places=1)
+        game = result[0]
+        self.assertAlmostEqual(game.evals[0], 0.17, places=2)
+        self.assertAlmostEqual(game.evals[1], 0.19, places=2)
+        self.assertAlmostEqual(game.clocks[0], 30.0, places=1)
+        self.assertAlmostEqual(game.clocks[1], 29.0, places=1)
 
     def test_missing_clocks_evals_are_nan(self):
         """Test missing clocks/evals are NaN."""
@@ -908,8 +920,9 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array(pgns)])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
-        self.assertTrue(np.isnan(result.clocks[0]))
-        self.assertTrue(np.isnan(result.evals[0]))
+        game = result[0]
+        self.assertTrue(np.isnan(game.clocks[0]))
+        self.assertTrue(np.isnan(game.evals[0]))
 
     def test_headers_preserved(self):
         """Test headers are preserved as dicts."""
@@ -937,9 +950,9 @@ class TestParsedGamesFlat(unittest.TestCase):
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
         self.assertEqual(len(result), 3)
-        self.assertTrue(result.valid[0])
-        self.assertFalse(result.valid[1])
-        self.assertTrue(result.valid[2])
+        self.assertTrue(result[0].is_valid)
+        self.assertFalse(result[1].is_valid)
+        self.assertTrue(result[2].is_valid)
 
     def test_checkmate_detection(self):
         """Test checkmate is detected."""
@@ -962,10 +975,9 @@ class TestParsedGamesFlat(unittest.TestCase):
         chunked = pa.chunked_array([pa.array([pgn])])
         result = rust_pgn_reader_python_binding.parse_games_flat(chunked)
 
-        # Promotion to queen = 5
-        self.assertEqual(result.promotions[0], 5)
-
         game = result[0]
+        # Promotion to queen = 5
+        self.assertEqual(game.promotions[0], 5)
         self.assertEqual(game.move_uci(0), "a7a8q")
 
     def test_num_properties(self):

@@ -114,7 +114,7 @@ def benchmark_parse_games_flat(
         "games_per_second": result.num_games / elapsed,
         "moves_per_second": result.num_moves / elapsed,
         "positions_per_second": result.num_positions / elapsed,
-        "valid_games": int(result.valid.sum()),
+        "valid_games": int(sum(chunk.valid.sum() for chunk in result.chunks)),
         "result": result,
     }
 
@@ -159,18 +159,22 @@ def benchmark_data_access_flat(result) -> dict:
     """Benchmark data access patterns for parse_games_flat result."""
     start = time.perf_counter()
 
-    # Simulate ML data loading: access all boards
-    _ = result.boards.sum()
+    # Simulate ML data loading: access all boards via chunks
+    for chunk in result.chunks:
+        _ = chunk.boards.sum()
 
-    # Access moves
-    _ = result.from_squares.sum()
-    _ = result.to_squares.sum()
+    # Access moves via chunks
+    for chunk in result.chunks:
+        _ = chunk.from_squares.sum()
+        _ = chunk.to_squares.sum()
 
-    # Random position access
+    # Per-game access pattern (iterate and access boards)
+    for i in range(min(1000, result.num_games)):
+        game = result[i]
+        _ = game.boards
+
+    # Position-to-game mapping (still works globally)
     indices = np.random.randint(0, result.num_positions, size=1000, dtype=np.int64)
-    _ = result.boards[indices]
-
-    # Position-to-game mapping
     _ = result.position_to_game(indices)
 
     elapsed = time.perf_counter() - start
@@ -323,24 +327,27 @@ def main():
     print("=" * 60)
 
     flat_result = flat_results["result"]
-    flat_bytes = (
-        flat_result.boards.nbytes
-        + flat_result.castling.nbytes
-        + flat_result.en_passant.nbytes
-        + flat_result.halfmove_clock.nbytes
-        + flat_result.turn.nbytes
-        + flat_result.from_squares.nbytes
-        + flat_result.to_squares.nbytes
-        + flat_result.promotions.nbytes
-        + flat_result.clocks.nbytes
-        + flat_result.evals.nbytes
-        + flat_result.move_offsets.nbytes
-        + flat_result.position_offsets.nbytes
-    )
+    flat_bytes = 0
+    for chunk in flat_result.chunks:
+        flat_bytes += (
+            chunk.boards.nbytes
+            + chunk.castling.nbytes
+            + chunk.en_passant.nbytes
+            + chunk.halfmove_clock.nbytes
+            + chunk.turn.nbytes
+            + chunk.from_squares.nbytes
+            + chunk.to_squares.nbytes
+            + chunk.promotions.nbytes
+            + chunk.clocks.nbytes
+            + chunk.evals.nbytes
+            + chunk.move_offsets.nbytes
+            + chunk.position_offsets.nbytes
+        )
 
     print(f"\nFlat arrays total:    {flat_bytes / 1024 / 1024:.2f} MB")
     print(f"Bytes per position:   {flat_bytes / flat_result.num_positions:.1f}")
     print(f"Bytes per move:       {flat_bytes / flat_result.num_moves:.1f}")
+    print(f"Number of chunks:     {flat_result.num_chunks}")
 
     print("\n" + "=" * 60)
     print("Benchmark complete!")

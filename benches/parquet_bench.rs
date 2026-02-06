@@ -5,13 +5,13 @@
 
 use arrow::array::{Array, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
 
-use rust_pgn_reader_python_binding::{FlatBuffers, parse_game_to_flat, parse_single_game_native};
+use rust_pgn_reader_python_binding::{parse_game_to_flat, parse_single_game_native, FlatBuffers};
 
 const FILE_PATH: &str = "2013-07-train-00000-of-00001.parquet";
 
@@ -129,7 +129,8 @@ pub fn bench_arrow_api(store_board_states: bool) {
 /// 1. Read parquet to Arrow arrays
 /// 2. Extract &str slices from StringArray
 /// 3. Parse in parallel with explicit chunking (par_chunks) → fixed number of FlatBuffers
-/// 4. Merge all FlatBuffers into one
+///
+/// No merge step — the chunked architecture keeps per-thread buffers as-is.
 pub fn bench_flat_api() {
     // Step 1: Read parquet to Arrow StringArrays
     let arrays = read_parquet_to_string_arrays(FILE_PATH);
@@ -179,30 +180,30 @@ pub fn bench_flat_api() {
 
     let duration_parallel = start.elapsed();
     println!("Parallel parsing time: {:?}", duration_parallel);
-    println!("Created {} FlatBuffers to merge", chunk_results.len());
+    println!(
+        "Created {} FlatBuffers chunks (no merge needed)",
+        chunk_results.len()
+    );
 
-    // Step 5: Merge all chunk buffers (mirrors parse_games_flat)
-    let combined_buffers = FlatBuffers::merge_all(chunk_results);
+    // Compute totals from chunks
+    let total_games: usize = chunk_results.iter().map(|b| b.num_games()).sum();
+    let total_positions: usize = chunk_results.iter().map(|b| b.total_positions()).sum();
 
-    let duration_with_merge = start.elapsed();
-    println!("Total time (parsing + merge): {:?}", duration_with_merge);
+    let duration_total = start.elapsed();
+    println!("Total time (parsing, no merge): {:?}", duration_total);
     println!(
         "Parsed {} games, {} total positions.",
-        combined_buffers.num_games(),
-        combined_buffers.total_positions()
+        total_games, total_positions
     );
 
     // Measure cleanup time for fair comparison with Arrow API
     let drop_start = Instant::now();
-    drop(combined_buffers);
+    drop(chunk_results);
     let drop_duration = drop_start.elapsed();
 
     let total_duration = start.elapsed();
     println!("Cleanup time (drop): {:?}", drop_duration);
-    println!(
-        "Total time (parsing + merge + cleanup): {:?}",
-        total_duration
-    );
+    println!("Total time (parsing + cleanup): {:?}", total_duration);
 }
 
 fn main() {

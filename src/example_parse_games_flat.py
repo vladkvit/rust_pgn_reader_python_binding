@@ -66,22 +66,20 @@ def main():
     print(f"Number of games:     {result.num_games}")
     print(f"Total moves:         {result.num_moves}")
     print(f"Total positions:     {result.num_positions}")
-    print(f"Valid games:         {result.valid.sum()} / {result.num_games}")
+    print(f"Number of chunks:    {result.num_chunks}")
 
-    # === Array Shapes ===
-    print(f"\n--- Array Shapes ---")
-    print(f"boards:              {result.boards.shape} ({result.boards.dtype})")
-    print(f"castling:            {result.castling.shape} ({result.castling.dtype})")
-    print(f"en_passant:          {result.en_passant.shape} ({result.en_passant.dtype})")
-    print(
-        f"from_squares:        {result.from_squares.shape} ({result.from_squares.dtype})"
-    )
-    print(f"to_squares:          {result.to_squares.shape} ({result.to_squares.dtype})")
-    print(f"promotions:          {result.promotions.shape} ({result.promotions.dtype})")
-    print(f"clocks:              {result.clocks.shape} ({result.clocks.dtype})")
-    print(f"evals:               {result.evals.shape} ({result.evals.dtype})")
-    print(f"move_offsets:        {result.move_offsets.shape}")
-    print(f"position_offsets:    {result.position_offsets.shape}")
+    # === Chunk Details (escape hatch for raw array access) ===
+    print(f"\n--- Chunk Details ---")
+    for i, chunk in enumerate(result.chunks):
+        print(
+            f"  Chunk {i}: {chunk.num_games} games, "
+            f"{chunk.num_moves} moves, "
+            f"{chunk.num_positions} positions"
+        )
+        print(f"    boards:       {chunk.boards.shape} ({chunk.boards.dtype})")
+        print(
+            f"    from_squares: {chunk.from_squares.shape} ({chunk.from_squares.dtype})"
+        )
 
     # === Iterate Over Games ===
     print(f"\n--- Game Details ---")
@@ -106,9 +104,10 @@ def main():
     # === Direct Array Access for ML ===
     print(f"\n--- ML-Ready Data Access ---")
 
-    # Get all board positions as a single tensor
-    all_boards = result.boards  # Shape: (N_positions, 8, 8)
-    print(f"All boards tensor: {all_boards.shape}")
+    # Access boards via chunks (no single merged array)
+    # To concatenate all boards: np.concatenate([c.boards for c in result.chunks])
+    chunk0_boards = result.chunks[0].boards
+    print(f"Chunk 0 boards: {chunk0_boards.shape}")
 
     # Get initial position of first game
     game0 = result[0]
