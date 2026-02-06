@@ -8,13 +8,13 @@
 
 use arrow::array::{Array, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
 
-use rust_pgn_reader_python_binding::{parse_game_to_flat, parse_single_game_native, FlatBuffers};
+use rust_pgn_reader_python_binding::{FlatBuffers, parse_game_to_flat, parse_single_game_native};
 
 const FILE_PATH: &str = "2013-07-train-00000-of-00001.parquet";
 
