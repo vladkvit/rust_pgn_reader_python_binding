@@ -16,7 +16,7 @@ mod visitor;
 
 pub use flat_visitor::{parse_game_to_flat, FlatBuffers};
 use python_bindings::{ParsedGames, ParsedGamesIter, PositionStatus, PyGameView, PyUciMove};
-use visitor::MoveExtractor;
+pub use visitor::MoveExtractor;
 
 /// Parse games from Arrow chunked array into flat NumPy arrays.
 ///

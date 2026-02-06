@@ -19,15 +19,19 @@ num_cpus = "1.17"
 arrow-array = "57"
 pyo3-arrow = "0.15"
 numpy = "0.27"
+parquet = "57"
+arrow = "57"
 
 [dev-dependencies]
 criterion = "0.8"
-parquet = "57"
-arrow = "57"
 
 [[bench]]
 harness = false
 name = "parquet_bench"
+
+[[bin]]
+name = "parquet_bench"
+path = "benches/parquet_bench.rs"
 
 [profile.bench]
 debug = true
