@@ -7,29 +7,61 @@
 //! Note: This differs from some Python code that uses [7 - rank, file] indexing.
 //! The Python wrapper can transpose if needed.
 
-use shakmaty::{Chess, Color, EnPassantMode, Position, Role, Square};
+use shakmaty::{Chess, Color, EnPassantMode, Position, Square};
 
-/// TODO this is a bottleneck for the multithreaded part of the parser
 /// Serialize board position to 64-byte array.
 /// Index mapping: square index (a1=0, h8=63) -> piece value (0-12)
+///
+/// Optimized to iterate by piece type using bitboards directly,
+/// avoiding expensive piece_at() lookups for all 64 squares.
 pub fn serialize_board(pos: &Chess) -> [u8; 64] {
     let mut board = [0u8; 64];
     let b = pos.board();
 
-    for sq in Square::ALL {
-        if let Some(piece) = b.piece_at(sq) {
-            let piece_val = match piece.role {
-                Role::Pawn => 1,
-                Role::Knight => 2,
-                Role::Bishop => 3,
-                Role::Rook => 4,
-                Role::Queen => 5,
-                Role::King => 6,
-            };
-            let color_offset = if piece.color == Color::White { 0 } else { 6 };
-            board[sq as usize] = piece_val + color_offset;
-        }
+    // Get color bitboards once
+    let white = b.white();
+    let black = b.black();
+
+    // White pieces (value 1-6)
+    for sq in b.pawns() & white {
+        board[sq as usize] = 1;
     }
+    for sq in b.knights() & white {
+        board[sq as usize] = 2;
+    }
+    for sq in b.bishops() & white {
+        board[sq as usize] = 3;
+    }
+    for sq in b.rooks() & white {
+        board[sq as usize] = 4;
+    }
+    for sq in b.queens() & white {
+        board[sq as usize] = 5;
+    }
+    for sq in b.kings() & white {
+        board[sq as usize] = 6;
+    }
+
+    // Black pieces (value 7-12)
+    for sq in b.pawns() & black {
+        board[sq as usize] = 7;
+    }
+    for sq in b.knights() & black {
+        board[sq as usize] = 8;
+    }
+    for sq in b.bishops() & black {
+        board[sq as usize] = 9;
+    }
+    for sq in b.rooks() & black {
+        board[sq as usize] = 10;
+    }
+    for sq in b.queens() & black {
+        board[sq as usize] = 11;
+    }
+    for sq in b.kings() & black {
+        board[sq as usize] = 12;
+    }
+
     board
 }
 
