@@ -168,15 +168,6 @@ def benchmark_data_access_flat(result) -> dict:
         _ = chunk.from_squares.sum()
         _ = chunk.to_squares.sum()
 
-    # Per-game access pattern (iterate and access boards)
-    for i in range(min(1000, result.num_games)):
-        game = result[i]
-        _ = game.boards
-
-    # Position-to-game mapping (still works globally)
-    indices = np.random.randint(0, result.num_positions, size=1000, dtype=np.int64)
-    _ = result.position_to_game(indices)
-
     elapsed = time.perf_counter() - start
     return {"access_time": elapsed}
 
@@ -193,6 +184,37 @@ def benchmark_data_access_extractors(extractors: list) -> dict:
 
     elapsed = time.perf_counter() - start
     return {"access_time": elapsed}
+
+
+def benchmark_per_game_access_flat(result) -> dict:
+    """Benchmark per-game access pattern for parse_games_flat result."""
+    start = time.perf_counter()
+
+    # Per-game access pattern (iterate and access boards)
+    for i in range(min(1000, result.num_games)):
+        game = result[i]
+        _ = game.boards
+
+    elapsed = time.perf_counter() - start
+    return {
+        "access_time": elapsed,
+        "games_accessed": min(1000, result.num_games),
+    }
+
+
+def benchmark_position_to_game_mapping(result) -> dict:
+    """Benchmark position-to-game mapping for parse_games_flat result."""
+    start = time.perf_counter()
+
+    # Position-to-game mapping (still works globally)
+    indices = np.random.randint(0, result.num_positions, size=1000, dtype=np.int64)
+    _ = result.position_to_game(indices)
+
+    elapsed = time.perf_counter() - start
+    return {
+        "access_time": elapsed,
+        "positions_accessed": 1000,
+    }
 
 
 def format_number(n: float) -> str:
@@ -320,6 +342,27 @@ def main():
 
         access_speedup = extractor_access["access_time"] / flat_access["access_time"]
         print(f"\nFlat arrays are {access_speedup:.2f}x faster for data access")
+
+        # Per-game access benchmarks
+        print("\n" + "=" * 60)
+        print("PER-GAME ACCESS BENCHMARKS")
+        print("=" * 60)
+
+        per_game_access = benchmark_per_game_access_flat(flat_results["result"])
+        print(f"\nPer-game access time:        {per_game_access['access_time']:.3f}s")
+        print(f"Games accessed:              {per_game_access['games_accessed']:,}")
+        print(
+            f"Time per game:               {per_game_access['access_time'] / per_game_access['games_accessed'] * 1000:.3f}ms"
+        )
+
+        position_mapping = benchmark_position_to_game_mapping(flat_results["result"])
+        print(f"\nPosition-to-game mapping:    {position_mapping['access_time']:.3f}s")
+        print(
+            f"Positions mapped:            {position_mapping['positions_accessed']:,}"
+        )
+        print(
+            f"Time per lookup:             {position_mapping['access_time'] / position_mapping['positions_accessed'] * 1000000:.3f}μs"
+        )
 
     # Memory usage (approximate)
     print("\n" + "=" * 60)
