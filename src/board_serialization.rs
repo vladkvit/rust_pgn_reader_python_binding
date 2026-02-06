@@ -7,7 +7,7 @@
 //! Note: This differs from some Python code that uses [7 - rank, file] indexing.
 //! The Python wrapper can transpose if needed.
 
-use shakmaty::{Chess, Color, EnPassantMode, Position, Square};
+use shakmaty::{Chess, Color, EnPassantMode, Position, Role, Square};
 
 /// Serialize board position to 64-byte array.
 /// Index mapping: square index (a1=0, h8=63) -> piece value (0-12)
@@ -18,48 +18,14 @@ pub fn serialize_board(pos: &Chess) -> [u8; 64] {
     let mut board = [0u8; 64];
     let b = pos.board();
 
-    // Get color bitboards once
-    let white = b.white();
-    let black = b.black();
-
-    // White pieces (value 1-6)
-    for sq in b.pawns() & white {
-        board[sq as usize] = 1;
-    }
-    for sq in b.knights() & white {
-        board[sq as usize] = 2;
-    }
-    for sq in b.bishops() & white {
-        board[sq as usize] = 3;
-    }
-    for sq in b.rooks() & white {
-        board[sq as usize] = 4;
-    }
-    for sq in b.queens() & white {
-        board[sq as usize] = 5;
-    }
-    for sq in b.kings() & white {
-        board[sq as usize] = 6;
-    }
-
-    // Black pieces (value 7-12)
-    for sq in b.pawns() & black {
-        board[sq as usize] = 7;
-    }
-    for sq in b.knights() & black {
-        board[sq as usize] = 8;
-    }
-    for sq in b.bishops() & black {
-        board[sq as usize] = 9;
-    }
-    for sq in b.rooks() & black {
-        board[sq as usize] = 10;
-    }
-    for sq in b.queens() & black {
-        board[sq as usize] = 11;
-    }
-    for sq in b.kings() & black {
-        board[sq as usize] = 12;
+    for role in Role::ALL {
+        let piece_val = role as u8; // Role enum is 1-6
+        for sq in b.by_role(role) & b.white() {
+            board[sq as usize] = piece_val;
+        }
+        for sq in b.by_role(role) & b.black() {
+            board[sq as usize] = piece_val + 6;
+        }
     }
 
     board
