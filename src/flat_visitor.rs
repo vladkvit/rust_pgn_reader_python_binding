@@ -9,6 +9,7 @@ use crate::board_serialization::{
 };
 use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
 use pgn_reader::{Outcome, RawComment, RawTag, SanPlus, Skip, Visitor};
+use rayon::prelude::*;
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -114,10 +115,10 @@ impl FlatBuffers {
         self.headers.extend(other.headers);
     }
 
-    /// Merge multiple FlatBuffers efficiently by pre-allocating total capacity.
+    /// Merge multiple FlatBuffers efficiently using rayon's parallel collect.
     ///
-    /// This avoids the repeated reallocations that occur when calling `merge`
-    /// in a loop starting from an empty buffer.
+    /// This uses rayon's `into_par_iter().flat_map().collect()` pattern which
+    /// safely handles parallel collection without unsafe code.
     pub fn merge_all(buffers: Vec<FlatBuffers>) -> FlatBuffers {
         if buffers.is_empty() {
             return FlatBuffers::default();
@@ -126,63 +127,69 @@ impl FlatBuffers {
             return buffers.into_iter().next().unwrap();
         }
 
-        // Calculate total sizes
-        let total_games: usize = buffers.iter().map(|b| b.headers.len()).sum();
-        let total_positions: usize = buffers.iter().map(|b| b.boards.len() / 64).sum();
-        let total_moves: usize = buffers.iter().map(|b| b.from_squares.len()).sum();
+        // Use rayon's parallel flat_map and collect for all fields.
+        // This is safe and well-tested, using rayon's internal mechanisms
+        // for efficient parallel collection.
 
-        // Pre-allocate with exact capacity
-        let mut combined = FlatBuffers {
-            // Board state arrays
-            boards: Vec::with_capacity(total_positions * 64),
-            castling: Vec::with_capacity(total_positions * 4),
-            en_passant: Vec::with_capacity(total_positions),
-            halfmove_clock: Vec::with_capacity(total_positions),
-            turn: Vec::with_capacity(total_positions),
-
-            // Move arrays
-            from_squares: Vec::with_capacity(total_moves),
-            to_squares: Vec::with_capacity(total_moves),
-            promotions: Vec::with_capacity(total_moves),
-            clocks: Vec::with_capacity(total_moves),
-            evals: Vec::with_capacity(total_moves),
-
-            // Per-game data
-            move_counts: Vec::with_capacity(total_games),
-            position_counts: Vec::with_capacity(total_games),
-            is_checkmate: Vec::with_capacity(total_games),
-            is_stalemate: Vec::with_capacity(total_games),
-            is_insufficient: Vec::with_capacity(total_games * 2),
-            legal_move_count: Vec::with_capacity(total_games),
-            valid: Vec::with_capacity(total_games),
-            headers: Vec::with_capacity(total_games),
-        };
-
-        // Now merge - no reallocations will occur
-        for buf in buffers {
-            combined.boards.extend(buf.boards);
-            combined.castling.extend(buf.castling);
-            combined.en_passant.extend(buf.en_passant);
-            combined.halfmove_clock.extend(buf.halfmove_clock);
-            combined.turn.extend(buf.turn);
-
-            combined.from_squares.extend(buf.from_squares);
-            combined.to_squares.extend(buf.to_squares);
-            combined.promotions.extend(buf.promotions);
-            combined.clocks.extend(buf.clocks);
-            combined.evals.extend(buf.evals);
-
-            combined.move_counts.extend(buf.move_counts);
-            combined.position_counts.extend(buf.position_counts);
-            combined.is_checkmate.extend(buf.is_checkmate);
-            combined.is_stalemate.extend(buf.is_stalemate);
-            combined.is_insufficient.extend(buf.is_insufficient);
-            combined.legal_move_count.extend(buf.legal_move_count);
-            combined.valid.extend(buf.valid);
-            combined.headers.extend(buf.headers);
+        // For Copy types, we can use flat_map with copied()
+        macro_rules! par_flatten {
+            ($field:ident) => {
+                buffers
+                    .par_iter()
+                    .flat_map(|buf| buf.$field.par_iter().copied())
+                    .collect()
+            };
         }
 
-        combined
+        // Board state arrays
+        let boards: Vec<u8> = par_flatten!(boards);
+        let castling: Vec<bool> = par_flatten!(castling);
+        let en_passant: Vec<i8> = par_flatten!(en_passant);
+        let halfmove_clock: Vec<u8> = par_flatten!(halfmove_clock);
+        let turn: Vec<bool> = par_flatten!(turn);
+
+        // Move arrays
+        let from_squares: Vec<u8> = par_flatten!(from_squares);
+        let to_squares: Vec<u8> = par_flatten!(to_squares);
+        let promotions: Vec<i8> = par_flatten!(promotions);
+        let clocks: Vec<f32> = par_flatten!(clocks);
+        let evals: Vec<f32> = par_flatten!(evals);
+
+        // Per-game data
+        let move_counts: Vec<u32> = par_flatten!(move_counts);
+        let position_counts: Vec<u32> = par_flatten!(position_counts);
+        let is_checkmate: Vec<bool> = par_flatten!(is_checkmate);
+        let is_stalemate: Vec<bool> = par_flatten!(is_stalemate);
+        let is_insufficient: Vec<bool> = par_flatten!(is_insufficient);
+        let legal_move_count: Vec<u16> = par_flatten!(legal_move_count);
+        let valid: Vec<bool> = par_flatten!(valid);
+
+        // Headers require ownership transfer (non-Copy type)
+        let headers: Vec<HashMap<String, String>> = buffers
+            .into_par_iter()
+            .flat_map(|buf| buf.headers)
+            .collect();
+
+        FlatBuffers {
+            boards,
+            castling,
+            en_passant,
+            halfmove_clock,
+            turn,
+            from_squares,
+            to_squares,
+            promotions,
+            clocks,
+            evals,
+            move_counts,
+            position_counts,
+            is_checkmate,
+            is_stalemate,
+            is_insufficient,
+            legal_move_count,
+            valid,
+            headers,
+        }
     }
 
     /// Number of games in this buffer.
