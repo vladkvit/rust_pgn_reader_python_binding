@@ -9,6 +9,7 @@
 
 use shakmaty::{Chess, Color, EnPassantMode, Position, Role, Square};
 
+/// TODO this is a bottleneck for the multithreaded part of the parser
 /// Serialize board position to 64-byte array.
 /// Index mapping: square index (a1=0, h8=63) -> piece value (0-12)
 pub fn serialize_board(pos: &Chess) -> [u8; 64] {

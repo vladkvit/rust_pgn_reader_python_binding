@@ -107,16 +107,23 @@ pub fn bench_arrow_api(store_board_states: bool) {
         })
         .expect("Parsing failed");
 
-    let duration = start.elapsed();
+    let parsing_duration = start.elapsed();
 
     // Report results
     let total_moves: usize = extractors.iter().map(|e| e.moves.len()).sum();
-    println!("Parsing time: {:?}", duration);
-    println!(
-        "Parsed {} games, {} total moves.",
-        extractors.len(),
-        total_moves
-    );
+    let num_games = extractors.len();
+    println!("Parsing time: {:?}", parsing_duration);
+    println!("Parsed {} games, {} total moves.", num_games, total_moves);
+
+    // Explicitly drop to measure cleanup time
+    // This is the cost Python will pay when the list goes out of scope
+    let drop_start = Instant::now();
+    drop(extractors);
+    let drop_duration = drop_start.elapsed();
+
+    let total_duration = start.elapsed();
+    println!("Cleanup time (drop): {:?}", drop_duration);
+    println!("Total time (parsing + cleanup): {:?}", total_duration);
 }
 
 /// Benchmark the Flat API workflow.
@@ -180,12 +187,24 @@ pub fn bench_flat_api() {
     // Step 5: Merge all chunk buffers (mirrors parse_games_flat)
     let combined_buffers = FlatBuffers::merge_all(chunk_results);
 
-    let duration_total = start.elapsed();
-    println!("Total time (including merge): {:?}", duration_total);
+    let duration_with_merge = start.elapsed();
+    println!("Total time (parsing + merge): {:?}", duration_with_merge);
     println!(
         "Parsed {} games, {} total positions.",
         combined_buffers.num_games(),
         combined_buffers.total_positions()
+    );
+
+    // Measure cleanup time for fair comparison with Arrow API
+    let drop_start = Instant::now();
+    drop(combined_buffers);
+    let drop_duration = drop_start.elapsed();
+
+    let total_duration = start.elapsed();
+    println!("Cleanup time (drop): {:?}", drop_duration);
+    println!(
+        "Total time (parsing + merge + cleanup): {:?}",
+        total_duration
     );
 }
 
