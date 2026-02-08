@@ -36,11 +36,9 @@ To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 
 `python src/bench_parse_games.py` (recommended — multithreaded parse_games via Arrow)
 
-`python src/bench_parse_games_from_strings.py` (multithreaded parse_games_from_strings)
+`python src/bench_parse_games_singlethreaded.py` (singlethreaded parse_games via Arrow)
 
-`python src/bench_parse_game.py` (single-threaded parse_game from parquet)
-
-`python src/bench_parse_game_pgn.py` (single-threaded parse_game from .pgn file)
+`python src/bench_parse_pgn.py` (multithreaded .pgn parsing)
 
 `python src/bench_data_access.py 2013-07-train-00000-of-00001.parquet` (parsing + data access + memory)
 
