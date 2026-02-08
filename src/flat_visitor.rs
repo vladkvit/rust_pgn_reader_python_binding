@@ -1,26 +1,33 @@
-//! Flat buffer visitor for direct SoA output.
+//! SoA (Struct-of-Arrays) visitor for PGN parsing.
 //!
 //! This module provides a memory-efficient parsing approach that writes
-//! directly to flat buffers instead of allocating per-game Vec structures.
-//! Used by `parse_games_flat` for optimal performance.
+//! directly to shared buffers instead of allocating per-game Vec structures.
+//! Used by `parse_games` for optimal performance.
 
 use crate::board_serialization::{
     get_castling_rights, get_en_passant_file, get_halfmove_clock, get_turn, serialize_board,
 };
 use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
-use pgn_reader::{Outcome, RawComment, RawTag, SanPlus, Skip, Visitor};
+use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, SanPlus, Skip, Visitor};
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-/// Accumulated flat buffers for multiple parsed games.
+/// Configuration for what optional data to store during parsing.
+#[derive(Clone, Debug)]
+pub struct ParseConfig {
+    pub store_comments: bool,
+    pub store_legal_moves: bool,
+}
+
+/// Accumulated buffers for multiple parsed games.
 ///
 /// This struct holds all data in a struct-of-arrays layout, optimized for:
 /// - Efficient thread-local accumulation during parallel parsing
 /// - Fast merging of thread-local buffers via `extend_from_slice`
 /// - Direct conversion to NumPy arrays without intermediate allocations
 #[derive(Default, Clone)]
-pub struct FlatBuffers {
+pub struct Buffers {
     // Board state arrays (one entry per position)
     pub boards: Vec<u8>,         // Flattened: 64 bytes per position
     pub castling: Vec<bool>,     // Flattened: 4 bools per position [K,Q,k,q]
@@ -44,19 +51,35 @@ pub struct FlatBuffers {
     pub legal_move_count: Vec<u16>,
     pub valid: Vec<bool>,
     pub headers: Vec<HashMap<String, String>>,
+    pub outcome: Vec<Option<String>>, // "White", "Black", "Draw", "Unknown", or None
+
+    // Optional: raw text comments (per-move), only populated when store_comments=true
+    pub comments: Vec<Option<String>>,
+
+    // Optional: legal moves at each position, only populated when store_legal_moves=true
+    // Stored as flat arrays with CSR-style offsets
+    pub legal_move_from_squares: Vec<u8>,
+    pub legal_move_to_squares: Vec<u8>,
+    pub legal_move_promotions: Vec<i8>,
+    pub legal_move_counts: Vec<u32>, // Number of legal moves per position
 }
 
-impl FlatBuffers {
-    /// Create a new FlatBuffers with pre-allocated capacity.
+impl Buffers {
+    /// Create a new Buffers with pre-allocated capacity.
     ///
     /// # Arguments
     /// * `estimated_games` - Expected number of games
     /// * `moves_per_game` - Expected average moves per game (default: 70)
-    pub fn with_capacity(estimated_games: usize, moves_per_game: usize) -> Self {
+    /// * `config` - Configuration for optional features
+    pub fn with_capacity(
+        estimated_games: usize,
+        moves_per_game: usize,
+        config: &ParseConfig,
+    ) -> Self {
         let estimated_moves = estimated_games * moves_per_game;
         let estimated_positions = estimated_moves + estimated_games; // +1 initial position per game
 
-        FlatBuffers {
+        Buffers {
             // Board state arrays
             boards: Vec::with_capacity(estimated_positions * 64),
             castling: Vec::with_capacity(estimated_positions * 4),
@@ -80,6 +103,36 @@ impl FlatBuffers {
             legal_move_count: Vec::with_capacity(estimated_games),
             valid: Vec::with_capacity(estimated_games),
             headers: Vec::with_capacity(estimated_games),
+            outcome: Vec::with_capacity(estimated_games),
+
+            // Optional comments
+            comments: if config.store_comments {
+                Vec::with_capacity(estimated_moves)
+            } else {
+                Vec::new()
+            },
+
+            // Optional legal moves
+            legal_move_from_squares: if config.store_legal_moves {
+                Vec::with_capacity(estimated_positions * 30)
+            } else {
+                Vec::new()
+            },
+            legal_move_to_squares: if config.store_legal_moves {
+                Vec::with_capacity(estimated_positions * 30)
+            } else {
+                Vec::new()
+            },
+            legal_move_promotions: if config.store_legal_moves {
+                Vec::with_capacity(estimated_positions * 30)
+            } else {
+                Vec::new()
+            },
+            legal_move_counts: if config.store_legal_moves {
+                Vec::with_capacity(estimated_positions)
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -118,35 +171,54 @@ impl FlatBuffers {
         }
         offsets
     }
+
+    /// Compute CSR-style offsets from legal move counts (per position).
+    pub fn compute_legal_move_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::with_capacity(self.legal_move_counts.len() + 1);
+        offsets.push(0);
+        for &count in &self.legal_move_counts {
+            offsets.push(offsets.last().unwrap() + count);
+        }
+        offsets
+    }
+
+    /// Total number of legal moves stored across all positions.
+    pub fn total_legal_moves(&self) -> usize {
+        self.legal_move_from_squares.len()
+    }
 }
 
-/// Visitor that writes directly to FlatBuffers.
+/// Visitor that writes directly to shared Buffers.
 ///
 /// This visitor does not allocate any per-game Vec structures.
-/// All data is appended directly to the shared FlatBuffers.
-pub struct FlatVisitor<'a> {
-    buffers: &'a mut FlatBuffers,
+/// All data is appended directly to the shared Buffers.
+pub struct GameVisitor<'a> {
+    buffers: &'a mut Buffers,
+    config: ParseConfig,
     pos: Chess,
     valid_moves: bool,
     current_headers: Vec<(String, String)>,
+    current_outcome: Option<String>,
     // Track counts for current game
     current_move_count: u32,
     current_position_count: u32,
 }
 
-impl<'a> FlatVisitor<'a> {
-    pub fn new(buffers: &'a mut FlatBuffers) -> Self {
-        FlatVisitor {
+impl<'a> GameVisitor<'a> {
+    pub fn new(buffers: &'a mut Buffers, config: &ParseConfig) -> Self {
+        GameVisitor {
             buffers,
+            config: config.clone(),
             pos: Chess::default(),
             valid_moves: true,
             current_headers: Vec::with_capacity(10),
+            current_outcome: None,
             current_move_count: 0,
             current_position_count: 0,
         }
     }
 
-    /// Record current board state to flat buffers.
+    /// Record current board state to buffers.
     fn push_board_state(&mut self) {
         self.buffers
             .boards
@@ -159,9 +231,37 @@ impl<'a> FlatVisitor<'a> {
             .push(get_halfmove_clock(&self.pos));
         self.buffers.turn.push(get_turn(&self.pos));
         self.current_position_count += 1;
+
+        // Store legal moves if enabled
+        if self.config.store_legal_moves {
+            self.push_legal_moves();
+        }
     }
 
-    /// Record move data to flat buffers.
+    /// Record legal moves at current position to buffers.
+    fn push_legal_moves(&mut self) {
+        let legal_moves = self.pos.legal_moves();
+        let mut count: u32 = 0;
+        for m in legal_moves {
+            let uci_move_obj = UciMove::from_standard(m);
+            if let UciMove::Normal {
+                from,
+                to,
+                promotion,
+            } = uci_move_obj
+            {
+                self.buffers.legal_move_from_squares.push(from as u8);
+                self.buffers.legal_move_to_squares.push(to as u8);
+                self.buffers
+                    .legal_move_promotions
+                    .push(promotion.map(|p| p as i8).unwrap_or(-1));
+                count += 1;
+            }
+        }
+        self.buffers.legal_move_counts.push(count);
+    }
+
+    /// Record move data to buffers.
     fn push_move(&mut self, from: u8, to: u8, promotion: Option<u8>) {
         self.buffers.from_squares.push(from);
         self.buffers.to_squares.push(to);
@@ -171,6 +271,10 @@ impl<'a> FlatVisitor<'a> {
         // Push placeholders for clock and eval (will be overwritten by comment())
         self.buffers.clocks.push(f32::NAN);
         self.buffers.evals.push(f32::NAN);
+        // Push comment placeholder if enabled (will be overwritten by comment())
+        if self.config.store_comments {
+            self.buffers.comments.push(None);
+        }
         self.current_move_count += 1;
     }
 
@@ -196,6 +300,7 @@ impl<'a> FlatVisitor<'a> {
             .position_counts
             .push(self.current_position_count);
         self.buffers.valid.push(self.valid_moves);
+        self.buffers.outcome.push(self.current_outcome.take());
 
         // Convert headers to HashMap
         let header_map: HashMap<String, String> = self.current_headers.drain(..).collect();
@@ -203,7 +308,7 @@ impl<'a> FlatVisitor<'a> {
     }
 }
 
-impl Visitor for FlatVisitor<'_> {
+impl Visitor for GameVisitor<'_> {
     type Tags = Vec<(String, String)>;
     type Movetext = ();
     type Output = bool;
@@ -228,6 +333,7 @@ impl Visitor for FlatVisitor<'_> {
     fn begin_movetext(&mut self, tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
         self.current_headers = tags;
         self.valid_moves = true;
+        self.current_outcome = None;
         self.current_move_count = 0;
         self.current_position_count = 0;
 
@@ -324,6 +430,12 @@ impl Visitor for FlatVisitor<'_> {
         comment: RawComment<'_>,
     ) -> ControlFlow<Self::Output> {
         if let Ok((_, parsed_comments)) = parse_comments(comment.as_bytes()) {
+            let mut move_comments = if self.config.store_comments {
+                Some(String::new())
+            } else {
+                None
+            };
+
             for content in parsed_comments {
                 match content {
                     CommentContent::Tag(tag_content) => match tag_content {
@@ -344,13 +456,33 @@ impl Visitor for FlatVisitor<'_> {
                                     hours as f32 * 3600.0 + minutes as f32 * 60.0 + seconds as f32;
                             }
                         }
-                        ParsedTag::Mate(_) => {
-                            // Mate scores are handled as comments, not numeric evals
+                        ParsedTag::Mate(mate_value) => {
+                            // Mate scores stored as text in comments (matching old API behavior)
+                            if let Some(ref mut comments) = move_comments {
+                                if !comments.is_empty() && !comments.ends_with(' ') {
+                                    comments.push(' ');
+                                }
+                                comments.push_str(&format!("[Mate {}]", mate_value));
+                            }
                         }
                     },
-                    CommentContent::Text(_) => {
-                        // Text comments are not stored in flat output
+                    CommentContent::Text(text) => {
+                        if let Some(ref mut comments) = move_comments {
+                            if !text.trim().is_empty() {
+                                if !comments.is_empty() {
+                                    comments.push(' ');
+                                }
+                                comments.push_str(&text);
+                            }
+                        }
                     }
+                }
+            }
+
+            // Update the last comment entry if comments are enabled
+            if let Some(comment_text) = move_comments {
+                if let Some(last_comment) = self.buffers.comments.last_mut() {
+                    *last_comment = Some(comment_text);
                 }
             }
         }
@@ -369,6 +501,13 @@ impl Visitor for FlatVisitor<'_> {
         _movetext: &mut Self::Movetext,
         _outcome: Outcome,
     ) -> ControlFlow<Self::Output> {
+        self.current_outcome = Some(match _outcome {
+            Outcome::Known(known) => match known {
+                KnownOutcome::Decisive { winner } => format!("{:?}", winner),
+                KnownOutcome::Draw => "Draw".to_string(),
+            },
+            Outcome::Unknown => "Unknown".to_string(),
+        });
         self.update_position_status();
         ControlFlow::Continue(())
     }
@@ -383,13 +522,17 @@ impl Visitor for FlatVisitor<'_> {
     }
 }
 
-/// Parse a single game directly into FlatBuffers.
-pub fn parse_game_to_flat(pgn: &str, buffers: &mut FlatBuffers) -> Result<bool, String> {
+/// Parse a single game directly into Buffers.
+pub fn parse_game_to_buffers(
+    pgn: &str,
+    buffers: &mut Buffers,
+    config: &ParseConfig,
+) -> Result<bool, String> {
     use pgn_reader::Reader;
     use std::io::Cursor;
 
     let mut reader = Reader::new(Cursor::new(pgn));
-    let mut visitor = FlatVisitor::new(buffers);
+    let mut visitor = GameVisitor::new(buffers, config);
 
     match reader.read_game(&mut visitor) {
         Ok(Some(valid)) => Ok(valid),
@@ -402,6 +545,13 @@ pub fn parse_game_to_flat(pgn: &str, buffers: &mut FlatBuffers) -> Result<bool, 
 mod tests {
     use super::*;
 
+    fn default_config() -> ParseConfig {
+        ParseConfig {
+            store_comments: false,
+            store_legal_moves: false,
+        }
+    }
+
     #[test]
     fn test_parse_simple_game() {
         let pgn = r#"[Event "Test"]
@@ -411,8 +561,9 @@ mod tests {
 
 1. e4 e5 2. Nf3 Nc6 1-0"#;
 
-        let mut buffers = FlatBuffers::with_capacity(1, 70);
-        let result = parse_game_to_flat(pgn, &mut buffers);
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
 
         assert!(result.is_ok());
         assert!(result.unwrap()); // valid game
@@ -421,6 +572,7 @@ mod tests {
         assert_eq!(buffers.position_counts[0], 5); // 5 positions (initial + 4 moves)
         assert_eq!(buffers.total_moves(), 4);
         assert_eq!(buffers.total_positions(), 5);
+        assert_eq!(buffers.outcome[0], Some("White".to_string()));
     }
 
     #[test]
@@ -430,8 +582,9 @@ mod tests {
 
 1. e4 { [%eval 0.17] [%clk 0:03:00] } 1... e5 { [%eval 0.19] [%clk 0:02:58] } 1-0"#;
 
-        let mut buffers = FlatBuffers::with_capacity(1, 70);
-        let result = parse_game_to_flat(pgn, &mut buffers);
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
 
         assert!(result.is_ok());
         assert_eq!(buffers.total_moves(), 2);
@@ -459,19 +612,22 @@ mod tests {
 
 1. d4 d5 2. c4 0-1"#;
 
-        let mut buffers = FlatBuffers::with_capacity(2, 70);
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(2, 70, &config);
 
-        parse_game_to_flat(pgn1, &mut buffers).unwrap();
-        parse_game_to_flat(pgn2, &mut buffers).unwrap();
+        parse_game_to_buffers(pgn1, &mut buffers, &config).unwrap();
+        parse_game_to_buffers(pgn2, &mut buffers, &config).unwrap();
 
         assert_eq!(buffers.num_games(), 2);
         assert_eq!(buffers.total_moves(), 5); // 2 + 3 moves
         assert_eq!(buffers.move_counts, vec![2, 3]);
+        assert_eq!(buffers.outcome[0], Some("White".to_string()));
+        assert_eq!(buffers.outcome[1], Some("Black".to_string()));
     }
 
     #[test]
     fn test_compute_offsets() {
-        let mut buffers = FlatBuffers::default();
+        let mut buffers = Buffers::default();
         buffers.move_counts = vec![4, 6, 3];
         buffers.position_counts = vec![5, 7, 4];
 
@@ -480,5 +636,90 @@ mod tests {
 
         let pos_offsets = buffers.compute_position_offsets();
         assert_eq!(pos_offsets, vec![0, 5, 12, 16]);
+    }
+
+    #[test]
+    fn test_outcome_without_headers() {
+        // PGN without Result header - outcome comes from movetext
+        let pgn = "1. e4 e5 2. Nf3 Nc6 0-1";
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        parse_game_to_buffers(pgn, &mut buffers, &config).unwrap();
+
+        assert_eq!(buffers.outcome[0], Some("Black".to_string()));
+    }
+
+    #[test]
+    fn test_outcome_draw() {
+        let pgn = "1. e4 e5 1/2-1/2";
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        parse_game_to_buffers(pgn, &mut buffers, &config).unwrap();
+
+        assert_eq!(buffers.outcome[0], Some("Draw".to_string()));
+    }
+
+    #[test]
+    fn test_comments_disabled() {
+        let pgn = r#"1. e4 { a comment } e5 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        parse_game_to_buffers(pgn, &mut buffers, &config).unwrap();
+
+        assert!(buffers.comments.is_empty());
+    }
+
+    #[test]
+    fn test_comments_enabled() {
+        let pgn = r#"1. e4 { a comment } 1... e5 { [%eval 0.19] } 1-0"#;
+
+        let config = ParseConfig {
+            store_comments: true,
+            store_legal_moves: false,
+        };
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        parse_game_to_buffers(pgn, &mut buffers, &config).unwrap();
+
+        assert_eq!(buffers.comments.len(), 2);
+        // Raw text from PGN includes surrounding spaces from the parser
+        assert_eq!(buffers.comments[0], Some(" a comment ".to_string()));
+        // The second comment only has an eval tag, so text portion is empty
+        assert_eq!(buffers.comments[1], Some("".to_string()));
+    }
+
+    #[test]
+    fn test_legal_moves_disabled() {
+        let pgn = "1. e4 e5 1-0";
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        parse_game_to_buffers(pgn, &mut buffers, &config).unwrap();
+
+        assert!(buffers.legal_move_from_squares.is_empty());
+        assert!(buffers.legal_move_counts.is_empty());
+    }
+
+    #[test]
+    fn test_legal_moves_enabled() {
+        let pgn = "1. e4 1-0";
+
+        let config = ParseConfig {
+            store_comments: false,
+            store_legal_moves: true,
+        };
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        parse_game_to_buffers(pgn, &mut buffers, &config).unwrap();
+
+        // 2 positions: initial + after e4
+        assert_eq!(buffers.legal_move_counts.len(), 2);
+        // Initial position has 20 legal moves
+        assert_eq!(buffers.legal_move_counts[0], 20);
+        // After e4, black has 20 legal moves
+        assert_eq!(buffers.legal_move_counts[1], 20);
+        // Total legal moves stored
+        assert_eq!(buffers.legal_move_from_squares.len(), 40);
     }
 }

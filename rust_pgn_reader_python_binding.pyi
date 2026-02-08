@@ -4,48 +4,6 @@ import numpy as np
 import numpy.typing as npt
 from numpy.typing import NDArray
 
-class PyUciMove:
-    from_square: int
-    to_square: int
-    promotion: Optional[int]
-
-    def __init__(
-        self, from_square: int, to_square: int, promotion: Optional[int]
-    ) -> None: ...
-    @property
-    def get_from_square_name(self) -> str: ...
-    @property
-    def get_to_square_name(self) -> str: ...
-    @property
-    def get_promotion_name(self) -> Optional[str]: ...
-    def __str__(self) -> str: ...
-    def __repr__(self) -> str: ...
-
-class PositionStatus:
-    is_checkmate: bool
-    is_stalemate: bool
-    legal_move_count: int
-    is_game_over: bool
-    insufficient_material: Tuple[bool, bool]
-    turn: bool
-
-class MoveExtractor:
-    moves: List[PyUciMove]
-    valid_moves: bool
-    comments: List[Optional[str]]
-    evals: List[Optional[float]]
-    clock_times: List[Optional[Tuple[int, int, float]]]
-    outcome: Optional[str]
-    headers: List[Tuple[str, str]]
-    castling_rights: List[Optional[Tuple[bool, bool, bool, bool]]]
-    position_status: Optional[PositionStatus]
-
-    def __init__(self, store_legal_moves: bool = False) -> None: ...
-    def turn(self) -> bool: ...
-    def update_position_status(self) -> None: ...
-    @property
-    def legal_moves(self) -> List[List[PyUciMove]]: ...
-
 class PyGameView:
     """Zero-copy view into a single game's data within a ParsedGames result.
 
@@ -136,6 +94,11 @@ class PyGameView:
         ...
 
     @property
+    def outcome(self) -> Optional[str]:
+        """Game outcome from movetext: 'White', 'Black', 'Draw', 'Unknown', or None."""
+        ...
+
+    @property
     def is_checkmate(self) -> bool:
         """Final position is checkmate."""
         ...
@@ -158,6 +121,22 @@ class PyGameView:
     @property
     def is_valid(self) -> bool:
         """Whether game parsed successfully."""
+        ...
+
+    @property
+    def is_game_over(self) -> bool:
+        """Whether the game is over (checkmate, stalemate, or both sides insufficient)."""
+        ...
+
+    @property
+    def comments(self) -> List[Optional[str]]:
+        """Raw text comments per move (only populated when store_comments=True)."""
+        ...
+
+    @property
+    def legal_moves(self) -> List[List[Tuple[int, int, int]]]:
+        """Legal moves at each position (only populated when store_legal_moves=True).
+        Each entry is a list of (from_square, to_square, promotion) tuples."""
         ...
 
     # === Convenience methods ===
@@ -232,6 +211,18 @@ class PyChunkView:
     def valid(self) -> NDArray[np.bool_]: ...
     @property
     def headers(self) -> List[Dict[str, str]]: ...
+    @property
+    def outcome(self) -> List[Optional[str]]: ...
+    @property
+    def comments(self) -> List[Optional[str]]: ...
+    @property
+    def legal_move_from_squares(self) -> NDArray[np.uint8]: ...
+    @property
+    def legal_move_to_squares(self) -> NDArray[np.uint8]: ...
+    @property
+    def legal_move_promotions(self) -> NDArray[np.int8]: ...
+    @property
+    def legal_move_offsets(self) -> NDArray[np.uint32]: ...
     def __repr__(self) -> str: ...
 
 class ParsedGames:
@@ -327,19 +318,32 @@ class ParsedGames:
         """
         ...
 
-def parse_game(pgn: str, store_legal_moves: bool = False) -> MoveExtractor: ...
-def parse_games(
-    pgns: List[str], num_threads: Optional[int] = None, store_legal_moves: bool = False
-) -> List[MoveExtractor]: ...
-def parse_game_moves_arrow_chunked_array(
-    pgn_chunked_array: pyarrow.ChunkedArray,
-    num_threads: Optional[int] = None,
+def parse_game(
+    pgn: str,
+    store_comments: bool = False,
     store_legal_moves: bool = False,
-) -> List[MoveExtractor]: ...
-def parse_games_flat(
+) -> ParsedGames:
+    """Parse a single PGN game string.
+
+    Convenience wrapper for parsing a single game. Returns a ParsedGames
+    container with one game.
+
+    Args:
+        pgn: PGN game string
+        store_comments: Whether to store raw text comments (default: False)
+        store_legal_moves: Whether to store legal moves at each position (default: False)
+
+    Returns:
+        ParsedGames object containing the parsed game
+    """
+    ...
+
+def parse_games(
     pgn_chunked_array: pyarrow.ChunkedArray,
     num_threads: Optional[int] = None,
     chunk_multiplier: Optional[int] = None,
+    store_comments: bool = False,
+    store_legal_moves: bool = False,
 ) -> ParsedGames:
     """Parse chess games from a PyArrow ChunkedArray into flat NumPy arrays.
 
@@ -349,6 +353,30 @@ def parse_games_flat(
     Args:
         pgn_chunked_array: PyArrow ChunkedArray containing PGN strings
         num_threads: Number of threads for parallel parsing (default: all CPUs)
+        chunk_multiplier: Multiplier for number of chunks (default: 1)
+        store_comments: Whether to store raw text comments (default: False)
+        store_legal_moves: Whether to store legal moves at each position (default: False)
+
+    Returns:
+        ParsedGames object containing flat arrays and iteration support
+    """
+    ...
+
+def parse_games_from_strings(
+    pgns: List[str],
+    num_threads: Optional[int] = None,
+    store_comments: bool = False,
+    store_legal_moves: bool = False,
+) -> ParsedGames:
+    """Parse multiple PGN game strings in parallel.
+
+    Convenience wrapper for when you have a list of strings rather than an Arrow array.
+
+    Args:
+        pgns: List of PGN game strings
+        num_threads: Number of threads for parallel parsing (default: all CPUs)
+        store_comments: Whether to store raw text comments (default: False)
+        store_legal_moves: Whether to store legal moves at each position (default: False)
 
     Returns:
         ParsedGames object containing flat arrays and iteration support

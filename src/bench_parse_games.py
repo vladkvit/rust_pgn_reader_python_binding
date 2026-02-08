@@ -1,5 +1,5 @@
 """
-Benchmark comparing parse_games_flat() vs parse_game_moves_arrow_chunked_array().
+Benchmark for parse_games() PGN parsing.
 
 This benchmark measures:
 1. Parsing speed (games/second)
@@ -7,7 +7,7 @@ This benchmark measures:
 3. Data access patterns for ML workloads
 
 Usage:
-    python bench_parse_games_flat.py [parquet_file]
+    python bench_parse_games.py [parquet_file]
 
 If no parquet file is provided, synthetic PGN data will be generated.
 """
@@ -25,7 +25,6 @@ import rust_pgn_reader_python_binding as pgn
 
 def generate_synthetic_pgns(num_games: int, moves_per_game: int = 40) -> list[str]:
     """Generate synthetic PGN games for benchmarking."""
-    # A realistic game template
     move_pairs = [
         ("e4", "e5"),
         ("Nf3", "Nc6"),
@@ -51,7 +50,6 @@ def generate_synthetic_pgns(num_games: int, moves_per_game: int = 40) -> list[st
 
     pgns = []
     for i in range(num_games):
-        # Build movetext
         moves = []
         num_pairs = min(moves_per_game // 2, len(move_pairs))
         for j in range(num_pairs):
@@ -78,7 +76,6 @@ def load_parquet_pgns(file_path: str, limit: Optional[int] = None) -> pa.Chunked
 
     pf = pq.ParquetFile(file_path)
 
-    # Try common column names for PGN/movetext
     table = pf.read()
     for col_name in ["movetext", "pgn", "moves", "game"]:
         if col_name in table.column_names:
@@ -92,21 +89,21 @@ def load_parquet_pgns(file_path: str, limit: Optional[int] = None) -> pa.Chunked
     )
 
 
-def benchmark_parse_games_flat(
+def benchmark_parse_games(
     chunked_array: pa.ChunkedArray, num_threads: Optional[int] = None, warmup: int = 1
 ) -> dict:
-    """Benchmark parse_games_flat()."""
+    """Benchmark parse_games()."""
     # Warmup
     for _ in range(warmup):
-        _ = pgn.parse_games_flat(chunked_array, num_threads=num_threads)
+        _ = pgn.parse_games(chunked_array, num_threads=num_threads)
 
     # Timed run
     start = time.perf_counter()
-    result = pgn.parse_games_flat(chunked_array, num_threads=num_threads)
+    result = pgn.parse_games(chunked_array, num_threads=num_threads)
     elapsed = time.perf_counter() - start
 
     return {
-        "method": "parse_games_flat",
+        "method": "parse_games",
         "elapsed_seconds": elapsed,
         "num_games": result.num_games,
         "num_moves": result.num_moves,
@@ -119,44 +116,8 @@ def benchmark_parse_games_flat(
     }
 
 
-def benchmark_parse_arrow_chunked(
-    chunked_array: pa.ChunkedArray, num_threads: Optional[int] = None, warmup: int = 1
-) -> dict:
-    """Benchmark parse_game_moves_arrow_chunked_array()."""
-    # Warmup
-    for _ in range(warmup):
-        _ = pgn.parse_game_moves_arrow_chunked_array(
-            chunked_array, num_threads=num_threads
-        )
-
-    # Timed run
-    start = time.perf_counter()
-    extractors = pgn.parse_game_moves_arrow_chunked_array(
-        chunked_array, num_threads=num_threads
-    )
-    elapsed = time.perf_counter() - start
-
-    num_games = len(extractors)
-    num_moves = sum(len(e.moves) for e in extractors)
-    num_positions = num_moves + num_games  # Approximate
-    valid_games = sum(1 for e in extractors if e.valid_moves)
-
-    return {
-        "method": "parse_arrow_chunked",
-        "elapsed_seconds": elapsed,
-        "num_games": num_games,
-        "num_moves": num_moves,
-        "num_positions": num_positions,
-        "games_per_second": num_games / elapsed,
-        "moves_per_second": num_moves / elapsed,
-        "positions_per_second": num_positions / elapsed,
-        "valid_games": valid_games,
-        "result": extractors,
-    }
-
-
-def benchmark_data_access_flat(result) -> dict:
-    """Benchmark data access patterns for parse_games_flat result."""
+def benchmark_data_access(result) -> dict:
+    """Benchmark data access patterns for parse_games result."""
     start = time.perf_counter()
 
     # Simulate ML data loading: access all boards via chunks
@@ -172,25 +133,10 @@ def benchmark_data_access_flat(result) -> dict:
     return {"access_time": elapsed}
 
 
-def benchmark_data_access_extractors(extractors: list) -> dict:
-    """Benchmark data access patterns for list of MoveExtractors."""
+def benchmark_per_game_access(result) -> dict:
+    """Benchmark per-game access pattern."""
     start = time.perf_counter()
 
-    # Simulate accessing all moves (requires iteration)
-    total = 0
-    for e in extractors:
-        for m in e.moves:
-            total += m.from_square + m.to_square
-
-    elapsed = time.perf_counter() - start
-    return {"access_time": elapsed}
-
-
-def benchmark_per_game_access_flat(result) -> dict:
-    """Benchmark per-game access pattern for parse_games_flat result."""
-    start = time.perf_counter()
-
-    # Per-game access pattern (iterate and access boards)
     for i in range(min(1000, result.num_games)):
         game = result[i]
         _ = game.boards
@@ -203,10 +149,9 @@ def benchmark_per_game_access_flat(result) -> dict:
 
 
 def benchmark_position_to_game_mapping(result) -> dict:
-    """Benchmark position-to-game mapping for parse_games_flat result."""
+    """Benchmark position-to-game mapping."""
     start = time.perf_counter()
 
-    # Position-to-game mapping (still works globally)
     indices = np.random.randint(0, result.num_positions, size=1000, dtype=np.int64)
     _ = result.position_to_game(indices)
 
@@ -242,9 +187,7 @@ def print_results(results: dict, label: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Benchmark parse_games_flat() vs parse_game_moves_arrow_chunked_array()"
-    )
+    parser = argparse.ArgumentParser(description="Benchmark parse_games()")
     parser.add_argument(
         "parquet_file",
         nargs="?",
@@ -282,7 +225,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print("parse_games_flat() Benchmark")
+    print("parse_games() Benchmark")
     print("=" * 60)
 
     # Load or generate data
@@ -303,30 +246,15 @@ def main():
     print(f"Threads: {args.threads or 'all cores'}")
     print(f"Warmup iterations: {args.warmup}")
 
-    # Benchmark parse_games_flat
+    # Benchmark
     print("\n" + "=" * 60)
-    print("PARSING BENCHMARKS")
+    print("PARSING BENCHMARK")
     print("=" * 60)
 
-    flat_results = benchmark_parse_games_flat(
+    results = benchmark_parse_games(
         chunked_array, num_threads=args.threads, warmup=args.warmup
     )
-    print_results(flat_results, "parse_games_flat()")
-
-    # Benchmark parse_game_moves_arrow_chunked_array
-    arrow_results = benchmark_parse_arrow_chunked(
-        chunked_array, num_threads=args.threads, warmup=args.warmup
-    )
-    print_results(arrow_results, "parse_game_moves_arrow_chunked_array()")
-
-    # Comparison
-    print("\n" + "=" * 60)
-    print("COMPARISON")
-    print("=" * 60)
-    speedup = arrow_results["elapsed_seconds"] / flat_results["elapsed_seconds"]
-    print(
-        f"\nparse_games_flat() is {speedup:.2f}x {'faster' if speedup > 1 else 'slower'}"
-    )
+    print_results(results, "parse_games()")
 
     # Data access benchmarks
     if not args.skip_access:
@@ -334,34 +262,23 @@ def main():
         print("DATA ACCESS BENCHMARKS")
         print("=" * 60)
 
-        flat_access = benchmark_data_access_flat(flat_results["result"])
-        print(f"\nFlat arrays access time:     {flat_access['access_time']:.3f}s")
+        data_access = benchmark_data_access(results["result"])
+        print(f"\nArray access time:           {data_access['access_time']:.3f}s")
 
-        extractor_access = benchmark_data_access_extractors(arrow_results["result"])
-        print(f"Extractor list access time:  {extractor_access['access_time']:.3f}s")
-
-        access_speedup = extractor_access["access_time"] / flat_access["access_time"]
-        print(f"\nFlat arrays are {access_speedup:.2f}x faster for data access")
-
-        # Per-game access benchmarks
-        print("\n" + "=" * 60)
-        print("PER-GAME ACCESS BENCHMARKS")
-        print("=" * 60)
-
-        per_game_access = benchmark_per_game_access_flat(flat_results["result"])
+        per_game_access = benchmark_per_game_access(results["result"])
         print(f"\nPer-game access time:        {per_game_access['access_time']:.3f}s")
         print(f"Games accessed:              {per_game_access['games_accessed']:,}")
         print(
             f"Time per game:               {per_game_access['access_time'] / per_game_access['games_accessed'] * 1000:.3f}ms"
         )
 
-        position_mapping = benchmark_position_to_game_mapping(flat_results["result"])
+        position_mapping = benchmark_position_to_game_mapping(results["result"])
         print(f"\nPosition-to-game mapping:    {position_mapping['access_time']:.3f}s")
         print(
             f"Positions mapped:            {position_mapping['positions_accessed']:,}"
         )
         print(
-            f"Time per lookup:             {position_mapping['access_time'] / position_mapping['positions_accessed'] * 1000000:.3f}μs"
+            f"Time per lookup:             {position_mapping['access_time'] / position_mapping['positions_accessed'] * 1000000:.3f}us"
         )
 
     # Memory usage (approximate)
@@ -369,10 +286,10 @@ def main():
     print("MEMORY USAGE (approximate)")
     print("=" * 60)
 
-    flat_result = flat_results["result"]
-    flat_bytes = 0
-    for chunk in flat_result.chunks:
-        flat_bytes += (
+    result = results["result"]
+    total_bytes = 0
+    for chunk in result.chunks:
+        total_bytes += (
             chunk.boards.nbytes
             + chunk.castling.nbytes
             + chunk.en_passant.nbytes
@@ -387,10 +304,10 @@ def main():
             + chunk.position_offsets.nbytes
         )
 
-    print(f"\nFlat arrays total:    {flat_bytes / 1024 / 1024:.2f} MB")
-    print(f"Bytes per position:   {flat_bytes / flat_result.num_positions:.1f}")
-    print(f"Bytes per move:       {flat_bytes / flat_result.num_moves:.1f}")
-    print(f"Number of chunks:     {flat_result.num_chunks}")
+    print(f"\nArrays total:         {total_bytes / 1024 / 1024:.2f} MB")
+    print(f"Bytes per position:   {total_bytes / result.num_positions:.1f}")
+    print(f"Bytes per move:       {total_bytes / result.num_moves:.1f}")
+    print(f"Number of chunks:     {result.num_chunks}")
 
     print("\n" + "=" * 60)
     print("Benchmark complete!")

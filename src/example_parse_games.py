@@ -1,5 +1,5 @@
 """
-Example demonstrating the parse_games_flat() API for ML-optimized PGN parsing.
+Example demonstrating the parse_games() API for ML-optimized PGN parsing.
 
 This API returns flat NumPy arrays suitable for efficient batch processing
 in machine learning pipelines.
@@ -52,14 +52,14 @@ sample_pgns = [
 
 def main():
     print("=" * 60)
-    print("parse_games_flat() API Example")
+    print("parse_games() API Example")
     print("=" * 60)
 
     # Create PyArrow chunked array from PGN strings
     chunked_array = pa.chunked_array([pa.array(sample_pgns)])
 
     # Parse all games at once - returns flat NumPy arrays
-    result = pgn.parse_games_flat(chunked_array)
+    result = pgn.parse_games(chunked_array)
 
     # === Basic Statistics ===
     print(f"\n--- Basic Statistics ---")
@@ -92,6 +92,7 @@ def main():
         print(f"  Positions:  {game.num_positions}")
         print(f"  Valid:      {game.is_valid}")
         print(f"  Checkmate:  {game.is_checkmate}")
+        print(f"  Outcome:    {game.outcome}")
         print(
             f"  UCI moves:  {' '.join(game.moves_uci()[:10])}{'...' if len(game) > 10 else ''}"
         )
@@ -157,6 +158,7 @@ def main():
         if game.is_checkmate:
             print(f"Game {i + 1} ended in checkmate!")
             print(f"  Final position legal moves: {game.legal_move_count}")
+            print(f"  Is game over: {game.is_game_over}")
 
     print("\n" + "=" * 60)
     print("Example complete!")

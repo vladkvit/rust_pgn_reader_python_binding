@@ -1,101 +1,7 @@
 use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyList, PySlice};
-use shakmaty::{Role, Square};
 use std::collections::HashMap;
-
-// Definition of PyUciMove
-#[pyclass(get_all, set_all, module = "rust_pgn_reader_python_binding")]
-#[derive(Clone, Debug)]
-pub struct PyUciMove {
-    pub from_square: u8,
-    pub to_square: u8,
-    pub promotion: Option<u8>,
-}
-
-#[pymethods]
-impl PyUciMove {
-    #[new]
-    pub fn new(from_square: u8, to_square: u8, promotion: Option<u8>) -> Self {
-        PyUciMove {
-            from_square,
-            to_square,
-            promotion,
-        }
-    }
-
-    #[getter]
-    fn get_from_square_name(&self) -> String {
-        Square::new(self.from_square as u32).to_string()
-    }
-
-    #[getter]
-    fn get_to_square_name(&self) -> String {
-        Square::new(self.to_square as u32).to_string()
-    }
-
-    #[getter]
-    fn get_promotion_name(&self) -> Option<String> {
-        self.promotion.and_then(|p_u8| {
-            Role::try_from(p_u8)
-                .map(|role| format!("{:?}", role)) // Get the debug representation (e.g., "Queen")
-                .ok()
-        })
-    }
-
-    // __str__ method for Python representation
-    fn __str__(&self) -> String {
-        let promo_str = self.promotion.map_or("".to_string(), |p_u8| {
-            Role::try_from(p_u8)
-                .map(|role| role.char().to_string())
-                .unwrap_or_else(|_| "".to_string()) // Handle potential error if u8 is not a valid Role
-        });
-        format!(
-            "{}{}{}",
-            Square::new(self.from_square as u32),
-            Square::new(self.to_square as u32),
-            promo_str
-        )
-    }
-
-    // __repr__ for a more developer-friendly representation
-    fn __repr__(&self) -> String {
-        let promo_repr = self.promotion.map_or("None".to_string(), |p_u8| {
-            Role::try_from(p_u8)
-                .map(|role| format!("Some('{}')", role.char()))
-                .unwrap_or_else(|_| format!("Some(InvalidRole({}))", p_u8))
-        });
-        format!(
-            "PyUciMove(from_square={}, to_square={}, promotion={})",
-            Square::new(self.from_square as u32),
-            Square::new(self.to_square as u32),
-            promo_repr
-        )
-    }
-}
-
-#[pyclass]
-/// Holds the status of a chess position.
-#[derive(Clone)]
-pub struct PositionStatus {
-    #[pyo3(get)]
-    pub is_checkmate: bool,
-
-    #[pyo3(get)]
-    pub is_stalemate: bool,
-
-    #[pyo3(get)]
-    pub legal_move_count: usize,
-
-    #[pyo3(get)]
-    pub is_game_over: bool,
-
-    #[pyo3(get)]
-    pub insufficient_material: (bool, bool),
-
-    #[pyo3(get)]
-    pub turn: bool,
-}
 
 /// Internal per-chunk data. Not exposed to Python directly.
 /// Each chunk corresponds to one thread's output during parallel parsing.
@@ -123,11 +29,22 @@ pub struct ChunkData {
     pub legal_move_count: Py<PyAny>, // (N_games,) u16
     pub valid: Py<PyAny>,            // (N_games,) bool
     pub headers: Vec<HashMap<String, String>>,
+    pub outcome: Vec<Option<String>>, // Per-game: "White", "Black", "Draw", "Unknown", or None
+
+    // Optional: raw text comments (per-move), only populated when store_comments=true
+    pub comments: Vec<Option<String>>,
+
+    // Optional: legal moves at each position (CSR arrays + offsets)
+    pub legal_move_from_squares: Py<PyAny>, // (N_legal_moves,) u8
+    pub legal_move_to_squares: Py<PyAny>,   // (N_legal_moves,) u8
+    pub legal_move_promotions: Py<PyAny>,   // (N_legal_moves,) i8
+    pub legal_move_offsets: Py<PyAny>,      // (N_positions + 1,) u32
 
     // Metadata
     pub num_games: usize,
     pub num_moves: usize,
     pub num_positions: usize,
+    pub num_legal_moves: usize,
 }
 
 /// Chunked container for parsed chess games, optimized for ML training.
@@ -526,6 +443,53 @@ impl PyChunkView {
             .clone()
     }
 
+    #[getter]
+    fn outcome(&self, py: Python<'_>) -> Vec<Option<String>> {
+        self.parent.borrow(py).chunks[self.chunk_idx]
+            .outcome
+            .clone()
+    }
+
+    /// Raw text comments per move (only populated when store_comments=true).
+    #[getter]
+    fn comments(&self, py: Python<'_>) -> Vec<Option<String>> {
+        self.parent.borrow(py).chunks[self.chunk_idx]
+            .comments
+            .clone()
+    }
+
+    /// Legal move from-squares for all positions in this chunk.
+    #[getter]
+    fn legal_move_from_squares(&self, py: Python<'_>) -> Py<PyAny> {
+        self.parent.borrow(py).chunks[self.chunk_idx]
+            .legal_move_from_squares
+            .clone_ref(py)
+    }
+
+    /// Legal move to-squares for all positions in this chunk.
+    #[getter]
+    fn legal_move_to_squares(&self, py: Python<'_>) -> Py<PyAny> {
+        self.parent.borrow(py).chunks[self.chunk_idx]
+            .legal_move_to_squares
+            .clone_ref(py)
+    }
+
+    /// Legal move promotions for all positions in this chunk.
+    #[getter]
+    fn legal_move_promotions(&self, py: Python<'_>) -> Py<PyAny> {
+        self.parent.borrow(py).chunks[self.chunk_idx]
+            .legal_move_promotions
+            .clone_ref(py)
+    }
+
+    /// CSR offsets for legal moves (per-position). Length = num_positions + 1.
+    #[getter]
+    fn legal_move_offsets(&self, py: Python<'_>) -> Py<PyAny> {
+        self.parent.borrow(py).chunks[self.chunk_idx]
+            .legal_move_offsets
+            .clone_ref(py)
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         let borrowed = self.parent.borrow(py);
         let chunk = &borrowed.chunks[self.chunk_idx];
@@ -847,6 +811,80 @@ impl PyGameView {
             .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid game index"))
     }
 
+    /// Whether the game is over (checkmate, stalemate, or both sides have insufficient material).
+    #[getter]
+    fn is_game_over(&self, py: Python<'_>) -> PyResult<bool> {
+        let checkmate = self.is_checkmate(py)?;
+        let stalemate = self.is_stalemate(py)?;
+        let (insuf_white, insuf_black) = self.is_insufficient(py)?;
+        Ok(checkmate || stalemate || (insuf_white && insuf_black))
+    }
+
+    /// Game outcome from movetext: "White", "Black", "Draw", "Unknown", or None.
+    #[getter]
+    fn outcome(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        let borrowed = self.data.borrow(py);
+        Ok(borrowed.chunks[self.chunk_idx].outcome[self.local_idx].clone())
+    }
+
+    /// Raw text comments per move (only populated when store_comments=true).
+    /// Returns list[str | None] of length num_moves.
+    #[getter]
+    fn comments(&self, py: Python<'_>) -> PyResult<Vec<Option<String>>> {
+        let borrowed = self.data.borrow(py);
+        let chunk_comments = &borrowed.chunks[self.chunk_idx].comments;
+        if chunk_comments.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(chunk_comments[self.move_start..self.move_end].to_vec())
+    }
+
+    /// Legal moves at each position in this game.
+    /// Returns list of lists: [[from, to, promotion], ...] per position.
+    /// Only populated when store_legal_moves=true.
+    #[getter]
+    fn legal_moves(&self, py: Python<'_>) -> PyResult<Vec<Vec<(u8, u8, i8)>>> {
+        let borrowed = self.data.borrow(py);
+        let chunk = &borrowed.chunks[self.chunk_idx];
+
+        // Check if legal moves were stored
+        if chunk.num_legal_moves == 0 {
+            return Ok(Vec::new());
+        }
+
+        let offsets_arr = chunk.legal_move_offsets.bind(py);
+        let offsets_arr: &Bound<'_, PyArray1<u32>> = offsets_arr.cast()?;
+        let offsets_ro = offsets_arr.readonly();
+        let offsets_slice = offsets_ro.as_slice()?;
+
+        let from_arr = chunk.legal_move_from_squares.bind(py);
+        let from_arr: &Bound<'_, PyArray1<u8>> = from_arr.cast()?;
+        let from_ro = from_arr.readonly();
+        let from_slice = from_ro.as_slice()?;
+
+        let to_arr = chunk.legal_move_to_squares.bind(py);
+        let to_arr: &Bound<'_, PyArray1<u8>> = to_arr.cast()?;
+        let to_ro = to_arr.readonly();
+        let to_slice = to_ro.as_slice()?;
+
+        let promo_arr = chunk.legal_move_promotions.bind(py);
+        let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.cast()?;
+        let promo_ro = promo_arr.readonly();
+        let promo_slice = promo_ro.as_slice()?;
+
+        let mut result = Vec::with_capacity(self.pos_end - self.pos_start);
+        for pos_idx in self.pos_start..self.pos_end {
+            let start = offsets_slice[pos_idx] as usize;
+            let end = offsets_slice[pos_idx + 1] as usize;
+            let mut moves = Vec::with_capacity(end - start);
+            for i in start..end {
+                moves.push((from_slice[i], to_slice[i], promo_slice[i]));
+            }
+            result.push(moves);
+        }
+        Ok(result)
+    }
+
     // === Convenience methods ===
 
     /// Get UCI string for move at index.
@@ -931,76 +969,5 @@ impl PyGameView {
             "<PyGameView {} vs {}, {} moves, valid={}>",
             white, black, n_moves, is_valid
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use shakmaty::{Role, Square};
-
-    #[test]
-    fn test_py_uci_move_no_promotion() {
-        let uci_move = PyUciMove::new(Square::E2 as u8, Square::E4 as u8, None);
-        assert_eq!(uci_move.from_square, Square::E2 as u8);
-        assert_eq!(uci_move.to_square, Square::E4 as u8);
-        assert_eq!(uci_move.promotion, None);
-        assert_eq!(uci_move.get_from_square_name(), "e2");
-        assert_eq!(uci_move.get_to_square_name(), "e4");
-        assert_eq!(uci_move.get_promotion_name(), None);
-        assert_eq!(uci_move.__str__(), "e2e4");
-        assert_eq!(
-            uci_move.__repr__(),
-            "PyUciMove(from_square=e2, to_square=e4, promotion=None)"
-        );
-    }
-
-    #[test]
-    fn test_py_uci_move_with_queen_promotion() {
-        let uci_move = PyUciMove::new(Square::E7 as u8, Square::E8 as u8, Some(Role::Queen as u8));
-        assert_eq!(uci_move.from_square, Square::E7 as u8);
-        assert_eq!(uci_move.to_square, Square::E8 as u8);
-        assert_eq!(uci_move.promotion, Some(Role::Queen as u8));
-        assert_eq!(uci_move.get_from_square_name(), "e7");
-        assert_eq!(uci_move.get_to_square_name(), "e8");
-        assert_eq!(uci_move.get_promotion_name(), Some("Queen".to_string()));
-        assert_eq!(uci_move.__str__(), "e7e8q");
-        assert_eq!(
-            uci_move.__repr__(),
-            "PyUciMove(from_square=e7, to_square=e8, promotion=Some('q'))"
-        );
-    }
-
-    #[test]
-    fn test_py_uci_move_with_rook_promotion() {
-        let uci_move = PyUciMove::new(Square::A7 as u8, Square::A8 as u8, Some(Role::Rook as u8));
-        assert_eq!(uci_move.from_square, Square::A7 as u8);
-        assert_eq!(uci_move.to_square, Square::A8 as u8);
-        assert_eq!(uci_move.promotion, Some(Role::Rook as u8));
-        assert_eq!(uci_move.get_from_square_name(), "a7");
-        assert_eq!(uci_move.get_to_square_name(), "a8");
-        assert_eq!(uci_move.get_promotion_name(), Some("Rook".to_string()));
-        assert_eq!(uci_move.__str__(), "a7a8r");
-        assert_eq!(
-            uci_move.__repr__(),
-            "PyUciMove(from_square=a7, to_square=a8, promotion=Some('r'))"
-        );
-    }
-
-    #[test]
-    fn test_py_uci_move_invalid_promotion_val() {
-        // Test with a u8 value that doesn't correspond to a valid Role
-        let uci_move = PyUciMove::new(Square::B7 as u8, Square::B8 as u8, Some(99)); // 99 is not a valid Role
-        assert_eq!(uci_move.from_square, Square::B7 as u8);
-        assert_eq!(uci_move.to_square, Square::B8 as u8);
-        assert_eq!(uci_move.promotion, Some(99));
-        assert_eq!(uci_move.get_from_square_name(), "b7");
-        assert_eq!(uci_move.get_to_square_name(), "b8");
-        assert_eq!(uci_move.get_promotion_name(), None); // Should be None as 99 is invalid
-        assert_eq!(uci_move.__str__(), "b7b8"); // Should produce no promotion char
-        assert_eq!(
-            uci_move.__repr__(),
-            "PyUciMove(from_square=b7, to_square=b8, promotion=Some(InvalidRole(99)))"
-        );
     }
 }
