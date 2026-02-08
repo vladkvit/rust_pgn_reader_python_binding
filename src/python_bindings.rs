@@ -30,6 +30,7 @@ pub struct ChunkData {
     pub valid: Py<PyAny>,            // (N_games,) bool
     pub headers: Vec<HashMap<String, String>>,
     pub outcome: Vec<Option<String>>, // Per-game: "White", "Black", "Draw", "Unknown", or None
+    pub parse_errors: Vec<Option<String>>, // Per-game: None if valid, Some(msg) if not
 
     // Optional: raw text comments (per-move), only populated when store_comments=true
     pub comments: Vec<Option<String>>,
@@ -47,11 +48,88 @@ pub struct ChunkData {
     pub num_legal_moves: usize,
 }
 
+// ---------------------------------------------------------------------------
+// Helper: searchsorted-based index mapping (used by position_to_game / move_to_game)
+// ---------------------------------------------------------------------------
+
+fn index_to_game<'py>(
+    py: Python<'py>,
+    offsets: &Py<PyAny>,
+    indices: &Bound<'py, PyAny>,
+) -> PyResult<Py<PyArray1<i64>>> {
+    let offsets = offsets.bind(py);
+    let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
+
+    let numpy = py.import("numpy")?;
+
+    let int64_dtype = numpy.getattr("int64")?;
+    let indices = numpy.call_method1("asarray", (indices,))?.call_method(
+        "astype",
+        (int64_dtype,),
+        Some(&[("copy", false)].into_py_dict(py)?),
+    )?;
+
+    let len = offsets.len()?;
+    let slice_obj = PySlice::new(py, 0, (len - 1) as isize, 1);
+    let offsets_slice = offsets.call_method1("__getitem__", (slice_obj,))?;
+
+    let result = numpy.call_method1(
+        "searchsorted",
+        (
+            offsets_slice,
+            indices,
+            pyo3::types::PyString::new(py, "right"),
+        ),
+    )?;
+
+    let one = 1i64.into_pyobject(py)?;
+    let result = result.call_method1("__sub__", (one,))?;
+
+    Ok(result.extract()?)
+}
+
+// ---------------------------------------------------------------------------
+// Helper: UCI string formatting
+// ---------------------------------------------------------------------------
+
+const FILES: [char; 8] = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+const RANKS: [char; 8] = ['1', '2', '3', '4', '5', '6', '7', '8'];
+const PROMO_CHARS: [char; 6] = ['_', '_', 'n', 'b', 'r', 'q']; // index 2=N, 3=B, 4=R, 5=Q
+
+fn format_uci(from_sq: u8, to_sq: u8, promo: i8) -> String {
+    let mut uci = format!(
+        "{}{}{}{}",
+        FILES[(from_sq % 8) as usize],
+        RANKS[(from_sq / 8) as usize],
+        FILES[(to_sq % 8) as usize],
+        RANKS[(to_sq / 8) as usize]
+    );
+    if promo >= 0 && (promo as usize) < PROMO_CHARS.len() {
+        uci.push(PROMO_CHARS[promo as usize]);
+    }
+    uci
+}
+
+// ---------------------------------------------------------------------------
+// ParsedGames
+// ---------------------------------------------------------------------------
+
 /// Chunked container for parsed chess games, optimized for ML training.
 ///
-/// Internally stores data in multiple chunks (one per parsing thread) to
-/// avoid the cost of merging. Per-game access is O(log(num_chunks)) via
-/// binary search on precomputed boundaries.
+/// Stores parsed PGN data across multiple internal chunks (one per parsing
+/// thread). Supports integer indexing, slicing, and iteration to access
+/// individual games as ``PyGameView`` objects.
+///
+/// Properties:
+///     num_games: Total number of games.
+///     num_moves: Total half-moves across all games.
+///     num_positions: Total board positions recorded.
+///     num_chunks: Number of internal chunks.
+///     chunks: List of ``PyChunkView`` for direct array access.
+///
+/// Methods:
+///     position_to_game(indices): Map position indices to game indices.
+///     move_to_game(indices): Map move indices to game indices.
 #[pyclass]
 pub struct ParsedGames {
     pub chunks: Vec<ChunkData>,
@@ -60,7 +138,9 @@ pub struct ParsedGames {
     // game_boundaries[i] = total games in chunks 0..i
     // So game_boundaries = [0, chunk0.num_games, chunk0+chunk1, ..., total_games]
     pub game_boundaries: Vec<usize>,
+    #[allow(dead_code)]
     pub move_boundaries: Vec<usize>,
+    #[allow(dead_code)]
     pub position_boundaries: Vec<usize>,
 
     pub total_games: usize,
@@ -122,6 +202,16 @@ impl ParsedGames {
 
     fn __len__(&self) -> usize {
         self.total_games
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<ParsedGames: {} games, {} moves, {} positions, {} chunks>",
+            self.total_games,
+            self.total_moves,
+            self.total_positions,
+            self.chunks.len()
+        )
     }
 
     fn __getitem__(slf: Py<Self>, py: Python<'_>, idx: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -196,300 +286,142 @@ impl ParsedGames {
 
     /// Map position indices to game indices.
     ///
-    /// Useful after shuffling/sampling positions to look up game metadata.
+    /// Given an array of indices into the global position space, returns
+    /// an array of the corresponding game indices. Useful after shuffling
+    /// or sampling positions to look up game metadata.
     ///
     /// Args:
-    ///     position_indices: Array of indices into the global position space.
+    ///     position_indices: Array of position indices.
     ///         Accepts any integer dtype; int64 is optimal (avoids conversion).
     ///
     /// Returns:
-    ///     Array of game indices (same shape as input)
+    ///     numpy.ndarray[int64]: Game indices (same shape as input).
     fn position_to_game<'py>(
         &self,
         py: Python<'py>,
         position_indices: &Bound<'py, PyAny>,
     ) -> PyResult<Py<PyArray1<i64>>> {
-        let offsets = self.global_position_offsets.bind(py);
-        let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
-
-        let numpy = py.import("numpy")?;
-
-        let int64_dtype = numpy.getattr("int64")?;
-        let position_indices = numpy
-            .call_method1("asarray", (position_indices,))?
-            .call_method(
-                "astype",
-                (int64_dtype,),
-                Some(&[("copy", false)].into_py_dict(py)?),
-            )?;
-
-        let len = offsets.len()?;
-        let slice_obj = PySlice::new(py, 0, (len - 1) as isize, 1);
-        let offsets_slice = offsets.call_method1("__getitem__", (slice_obj,))?;
-
-        let result = numpy.call_method1(
-            "searchsorted",
-            (
-                offsets_slice,
-                position_indices,
-                pyo3::types::PyString::new(py, "right"),
-            ),
-        )?;
-
-        let one = 1i64.into_pyobject(py)?;
-        let result = result.call_method1("__sub__", (one,))?;
-
-        Ok(result.extract()?)
+        index_to_game(py, &self.global_position_offsets, position_indices)
     }
 
     /// Map move indices to game indices.
     ///
+    /// Given an array of indices into the global move space, returns
+    /// an array of the corresponding game indices.
+    ///
     /// Args:
-    ///     move_indices: Array of indices into the global move space.
+    ///     move_indices: Array of move indices.
     ///         Accepts any integer dtype; int64 is optimal (avoids conversion).
     ///
     /// Returns:
-    ///     Array of game indices (same shape as input)
+    ///     numpy.ndarray[int64]: Game indices (same shape as input).
     fn move_to_game<'py>(
         &self,
         py: Python<'py>,
         move_indices: &Bound<'py, PyAny>,
     ) -> PyResult<Py<PyArray1<i64>>> {
-        let offsets = self.global_move_offsets.bind(py);
-        let offsets: &Bound<'_, PyArray1<u32>> = offsets.cast()?;
-
-        let numpy = py.import("numpy")?;
-
-        let int64_dtype = numpy.getattr("int64")?;
-        let move_indices = numpy
-            .call_method1("asarray", (move_indices,))?
-            .call_method(
-                "astype",
-                (int64_dtype,),
-                Some(&[("copy", false)].into_py_dict(py)?),
-            )?;
-
-        let len = offsets.len()?;
-        let slice_obj = PySlice::new(py, 0, (len - 1) as isize, 1);
-        let offsets_slice = offsets.call_method1("__getitem__", (slice_obj,))?;
-
-        let result = numpy.call_method1(
-            "searchsorted",
-            (
-                offsets_slice,
-                move_indices,
-                pyo3::types::PyString::new(py, "right"),
-            ),
-        )?;
-
-        let one = 1i64.into_pyobject(py)?;
-        let result = result.call_method1("__sub__", (one,))?;
-
-        Ok(result.extract()?)
+        index_to_game(py, &self.global_move_offsets, move_indices)
     }
 }
 
-/// Escape hatch: view into a single chunk's raw numpy arrays.
+// ---------------------------------------------------------------------------
+// PyChunkView — macros + impl
+// ---------------------------------------------------------------------------
+
+/// Lightweight view into a single parsing chunk's raw numpy arrays.
 ///
-/// Access via `parsed_games.chunks[i]`. Each chunk corresponds to one
-/// parsing thread's output. Use this for advanced access patterns like
-/// manual concatenation or custom batching.
+/// Access via ``parsed_games.chunks[i]``. Each chunk corresponds to one
+/// parsing thread's output. All numpy array properties are zero-copy
+/// references into the parent data.
+///
+/// Use this for advanced access patterns like manual concatenation,
+/// custom batching, or direct array-level ML pipelines.
 #[pyclass]
 pub struct PyChunkView {
     parent: Py<ParsedGames>,
     chunk_idx: usize,
 }
 
+/// Generate a `#[pymethods]` block with numpy-array getters for PyChunkView.
+macro_rules! chunk_array_getters {
+    ($($name:ident),+ $(,)?) => {
+        #[pymethods]
+        impl PyChunkView {
+            $(
+                #[getter]
+                fn $name(&self, py: Python<'_>) -> Py<PyAny> {
+                    self.parent.borrow(py).chunks[self.chunk_idx].$name.clone_ref(py)
+                }
+            )+
+        }
+    };
+}
+
+/// Generate a `#[pymethods]` block with Vec-cloning getters for PyChunkView.
+macro_rules! chunk_vec_getters {
+    ($($name:ident -> $ret:ty),+ $(,)?) => {
+        #[pymethods]
+        impl PyChunkView {
+            $(
+                #[getter]
+                fn $name(&self, py: Python<'_>) -> $ret {
+                    self.parent.borrow(py).chunks[self.chunk_idx].$name.clone()
+                }
+            )+
+        }
+    };
+}
+
+/// Generate a `#[pymethods]` block with scalar getters for PyChunkView.
+macro_rules! chunk_scalar_getters {
+    ($($name:ident),+ $(,)?) => {
+        #[pymethods]
+        impl PyChunkView {
+            $(
+                #[getter]
+                fn $name(&self, py: Python<'_>) -> usize {
+                    self.parent.borrow(py).chunks[self.chunk_idx].$name
+                }
+            )+
+        }
+    };
+}
+
+chunk_scalar_getters!(num_games, num_moves, num_positions);
+
+chunk_array_getters!(
+    boards,
+    castling,
+    en_passant,
+    halfmove_clock,
+    turn,
+    from_squares,
+    to_squares,
+    promotions,
+    clocks,
+    evals,
+    move_offsets,
+    position_offsets,
+    is_checkmate,
+    is_stalemate,
+    is_insufficient,
+    legal_move_count,
+    valid,
+    legal_move_from_squares,
+    legal_move_to_squares,
+    legal_move_promotions,
+    legal_move_offsets,
+);
+
+chunk_vec_getters!(
+    headers -> Vec<HashMap<String, String>>,
+    outcome -> Vec<Option<String>>,
+    parse_errors -> Vec<Option<String>>,
+    comments -> Vec<Option<String>>,
+);
+
 #[pymethods]
 impl PyChunkView {
-    #[getter]
-    fn num_games(&self, py: Python<'_>) -> usize {
-        self.parent.borrow(py).chunks[self.chunk_idx].num_games
-    }
-
-    #[getter]
-    fn num_moves(&self, py: Python<'_>) -> usize {
-        self.parent.borrow(py).chunks[self.chunk_idx].num_moves
-    }
-
-    #[getter]
-    fn num_positions(&self, py: Python<'_>) -> usize {
-        self.parent.borrow(py).chunks[self.chunk_idx].num_positions
-    }
-
-    #[getter]
-    fn boards(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .boards
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn castling(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .castling
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn en_passant(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .en_passant
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn halfmove_clock(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .halfmove_clock
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn turn(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .turn
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn from_squares(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .from_squares
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn to_squares(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .to_squares
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn promotions(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .promotions
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn clocks(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .clocks
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn evals(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .evals
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn move_offsets(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .move_offsets
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn position_offsets(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .position_offsets
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn is_checkmate(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .is_checkmate
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn is_stalemate(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .is_stalemate
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn is_insufficient(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .is_insufficient
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn legal_move_count(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .legal_move_count
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn valid(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .valid
-            .clone_ref(py)
-    }
-
-    #[getter]
-    fn headers(&self, py: Python<'_>) -> Vec<HashMap<String, String>> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .headers
-            .clone()
-    }
-
-    #[getter]
-    fn outcome(&self, py: Python<'_>) -> Vec<Option<String>> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .outcome
-            .clone()
-    }
-
-    /// Raw text comments per move (only populated when store_comments=true).
-    #[getter]
-    fn comments(&self, py: Python<'_>) -> Vec<Option<String>> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .comments
-            .clone()
-    }
-
-    /// Legal move from-squares for all positions in this chunk.
-    #[getter]
-    fn legal_move_from_squares(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .legal_move_from_squares
-            .clone_ref(py)
-    }
-
-    /// Legal move to-squares for all positions in this chunk.
-    #[getter]
-    fn legal_move_to_squares(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .legal_move_to_squares
-            .clone_ref(py)
-    }
-
-    /// Legal move promotions for all positions in this chunk.
-    #[getter]
-    fn legal_move_promotions(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .legal_move_promotions
-            .clone_ref(py)
-    }
-
-    /// CSR offsets for legal moves (per-position). Length = num_positions + 1.
-    #[getter]
-    fn legal_move_offsets(&self, py: Python<'_>) -> Py<PyAny> {
-        self.parent.borrow(py).chunks[self.chunk_idx]
-            .legal_move_offsets
-            .clone_ref(py)
-    }
-
     fn __repr__(&self, py: Python<'_>) -> String {
         let borrowed = self.parent.borrow(py);
         let chunk = &borrowed.chunks[self.chunk_idx];
@@ -499,6 +431,10 @@ impl PyChunkView {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// ParsedGamesIter
+// ---------------------------------------------------------------------------
 
 /// Iterator over games in a ParsedGames result.
 #[pyclass]
@@ -524,12 +460,29 @@ impl ParsedGamesIter {
     }
 }
 
-/// Zero-copy view into a single game's data within a ParsedGames result.
+// ---------------------------------------------------------------------------
+// PyGameView — macros + impl
+// ---------------------------------------------------------------------------
+
+/// Zero-copy view into a single game within a ParsedGames result.
 ///
-/// Board indexing note: Boards use square indexing (a1=0, h8=63).
-/// To convert to rank/file:
-///     rank = square // 8
-///     file = square % 8
+/// Provides access to board positions, moves, metadata, and annotations
+/// for one game. All array properties return numpy array slices (views,
+/// not copies) into the parent chunk's data.
+///
+/// Board encoding:
+///     Piece values: 0=empty, 1=P, 2=N, 3=B, 4=R, 5=Q, 6=K (white),
+///     7=p, 8=n, 9=b, 10=r, 11=q, 12=k (black).
+///
+/// Square indexing:
+///     a1=0, b1=1, ..., h1=7, a2=8, ..., h8=63.
+///     rank = square // 8, file = square % 8.
+///
+/// Move encoding:
+///     from_squares / to_squares: source and destination square indices.
+///     promotions: -1=none, 2=N, 3=B, 4=R, 5=Q.
+///     clocks: remaining time in seconds (NaN if missing).
+///     evals: engine evaluation in pawns (NaN if missing).
 #[pyclass]
 pub struct PyGameView {
     data: Py<ParsedGames>,
@@ -591,6 +544,47 @@ impl PyGameView {
     }
 }
 
+/// Generate a `#[pymethods]` block with position-sliced getters for PyGameView.
+macro_rules! game_view_pos_getters {
+    ($($name:ident),+ $(,)?) => {
+        #[pymethods]
+        impl PyGameView {
+            $(
+                #[getter]
+                fn $name<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+                    let borrowed = self.data.borrow(py);
+                    let arr = borrowed.chunks[self.chunk_idx].$name.bind(py);
+                    let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
+                    let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+                    Ok(slice.unbind())
+                }
+            )+
+        }
+    };
+}
+
+/// Generate a `#[pymethods]` block with move-sliced getters for PyGameView.
+macro_rules! game_view_move_getters {
+    ($($name:ident),+ $(,)?) => {
+        #[pymethods]
+        impl PyGameView {
+            $(
+                #[getter]
+                fn $name<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+                    let borrowed = self.data.borrow(py);
+                    let arr = borrowed.chunks[self.chunk_idx].$name.bind(py);
+                    let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
+                    let slice = arr.call_method1("__getitem__", (slice_obj,))?;
+                    Ok(slice.unbind())
+                }
+            )+
+        }
+    };
+}
+
+game_view_pos_getters!(boards, castling, en_passant, halfmove_clock, turn);
+game_view_move_getters!(from_squares, to_squares, promotions, clocks, evals);
+
 #[pymethods]
 impl PyGameView {
     /// Number of moves in this game.
@@ -602,18 +596,6 @@ impl PyGameView {
     #[getter]
     fn num_positions(&self) -> usize {
         self.pos_end - self.pos_start
-    }
-
-    // === Board state views ===
-
-    /// Board positions, shape (num_positions, 8, 8).
-    #[getter]
-    fn boards<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let boards = borrowed.chunks[self.chunk_idx].boards.bind(py);
-        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
-        let slice = boards.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
     }
 
     /// Initial board position, shape (8, 8).
@@ -631,98 +613,6 @@ impl PyGameView {
         let borrowed = self.data.borrow(py);
         let boards = borrowed.chunks[self.chunk_idx].boards.bind(py);
         let slice = boards.call_method1("__getitem__", (self.pos_end - 1,))?;
-        Ok(slice.unbind())
-    }
-
-    /// Castling rights [K,Q,k,q], shape (num_positions, 4).
-    #[getter]
-    fn castling<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].castling.bind(py);
-        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// En passant file (-1 if none), shape (num_positions,).
-    #[getter]
-    fn en_passant<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].en_passant.bind(py);
-        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// Halfmove clock, shape (num_positions,).
-    #[getter]
-    fn halfmove_clock<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].halfmove_clock.bind(py);
-        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// Side to move (True=white), shape (num_positions,).
-    #[getter]
-    fn turn<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].turn.bind(py);
-        let slice_obj = PySlice::new(py, self.pos_start as isize, self.pos_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    // === Move views ===
-
-    /// From squares, shape (num_moves,).
-    #[getter]
-    fn from_squares<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].from_squares.bind(py);
-        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// To squares, shape (num_moves,).
-    #[getter]
-    fn to_squares<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].to_squares.bind(py);
-        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// Promotions (-1=none, 2=N, 3=B, 4=R, 5=Q), shape (num_moves,).
-    #[getter]
-    fn promotions<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].promotions.bind(py);
-        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// Clock times in seconds (NaN if missing), shape (num_moves,).
-    #[getter]
-    fn clocks<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].clocks.bind(py);
-        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
-        Ok(slice.unbind())
-    }
-
-    /// Engine evals (NaN if missing), shape (num_moves,).
-    #[getter]
-    fn evals<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let borrowed = self.data.borrow(py);
-        let arr = borrowed.chunks[self.chunk_idx].evals.bind(py);
-        let slice_obj = PySlice::new(py, self.move_start as isize, self.move_end as isize, 1);
-        let slice = arr.call_method1("__getitem__", (slice_obj,))?;
         Ok(slice.unbind())
     }
 
@@ -814,9 +704,35 @@ impl PyGameView {
     /// Whether the game is over (checkmate, stalemate, or both sides have insufficient material).
     #[getter]
     fn is_game_over(&self, py: Python<'_>) -> PyResult<bool> {
-        let checkmate = self.is_checkmate(py)?;
-        let stalemate = self.is_stalemate(py)?;
-        let (insuf_white, insuf_black) = self.is_insufficient(py)?;
+        let borrowed = self.data.borrow(py);
+        let chunk = &borrowed.chunks[self.chunk_idx];
+
+        let cm_arr = chunk.is_checkmate.bind(py);
+        let cm_arr: &Bound<'_, PyArray1<bool>> = cm_arr.cast()?;
+        let checkmate = cm_arr
+            .readonly()
+            .as_slice()?
+            .get(self.local_idx)
+            .copied()
+            .unwrap_or(false);
+
+        let sm_arr = chunk.is_stalemate.bind(py);
+        let sm_arr: &Bound<'_, PyArray1<bool>> = sm_arr.cast()?;
+        let stalemate = sm_arr
+            .readonly()
+            .as_slice()?
+            .get(self.local_idx)
+            .copied()
+            .unwrap_or(false);
+
+        let ins_arr = chunk.is_insufficient.bind(py);
+        let ins_arr: &Bound<'_, PyArray2<bool>> = ins_arr.cast()?;
+        let ins_slice = ins_arr.readonly();
+        let ins_slice = ins_slice.as_slice()?;
+        let base = self.local_idx * 2;
+        let insuf_white = ins_slice.get(base).copied().unwrap_or(false);
+        let insuf_black = ins_slice.get(base + 1).copied().unwrap_or(false);
+
         Ok(checkmate || stalemate || (insuf_white && insuf_black))
     }
 
@@ -825,6 +741,13 @@ impl PyGameView {
     fn outcome(&self, py: Python<'_>) -> PyResult<Option<String>> {
         let borrowed = self.data.borrow(py);
         Ok(borrowed.chunks[self.chunk_idx].outcome[self.local_idx].clone())
+    }
+
+    /// Parse error message if the game failed to parse, or None if valid.
+    #[getter]
+    fn parse_error(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        let borrowed = self.data.borrow(py);
+        Ok(borrowed.chunks[self.chunk_idx].parse_errors[self.local_idx].clone())
     }
 
     /// Raw text comments per move (only populated when store_comments=true).
@@ -840,14 +763,13 @@ impl PyGameView {
     }
 
     /// Legal moves at each position in this game.
-    /// Returns list of lists: [[from, to, promotion], ...] per position.
+    /// Returns list of lists: [(from, to, promotion), ...] per position.
     /// Only populated when store_legal_moves=true.
     #[getter]
     fn legal_moves(&self, py: Python<'_>) -> PyResult<Vec<Vec<(u8, u8, i8)>>> {
         let borrowed = self.data.borrow(py);
         let chunk = &borrowed.chunks[self.chunk_idx];
 
-        // Check if legal moves were stored
         if chunk.num_legal_moves == 0 {
             return Ok(Vec::new());
         }
@@ -887,7 +809,7 @@ impl PyGameView {
 
     // === Convenience methods ===
 
-    /// Get UCI string for move at index.
+    /// Get UCI string for move at index (e.g. "e2e4", "a7a8q").
     fn move_uci(&self, py: Python<'_>, move_idx: usize) -> PyResult<String> {
         if move_idx >= self.move_end - self.move_start {
             return Err(pyo3::exceptions::PyIndexError::new_err(format!(
@@ -906,55 +828,37 @@ impl PyGameView {
         let promo_arr = chunk.promotions.bind(py);
         let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.cast()?;
 
-        let from_ro = from_arr.readonly();
-        let to_ro = to_arr.readonly();
-        let promo_ro = promo_arr.readonly();
-
-        let from_slice = from_ro.as_slice()?;
-        let to_slice = to_ro.as_slice()?;
-        let promo_slice = promo_ro.as_slice()?;
-
         let abs_idx = self.move_start + move_idx;
-        let from_sq = from_slice
-            .get(abs_idx)
-            .copied()
-            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid move index"))?;
-        let to_sq = to_slice
-            .get(abs_idx)
-            .copied()
-            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid move index"))?;
-        let promo = promo_slice
-            .get(abs_idx)
-            .copied()
-            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("Invalid move index"))?;
+        let from_sq = from_arr.readonly().as_slice()?[abs_idx];
+        let to_sq = to_arr.readonly().as_slice()?[abs_idx];
+        let promo = promo_arr.readonly().as_slice()?[abs_idx];
 
-        let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-        let ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
-
-        let mut uci = format!(
-            "{}{}{}{}",
-            files[(from_sq % 8) as usize],
-            ranks[(from_sq / 8) as usize],
-            files[(to_sq % 8) as usize],
-            ranks[(to_sq / 8) as usize]
-        );
-
-        if promo >= 0 {
-            let promo_chars = ['_', '_', 'n', 'b', 'r', 'q']; // 2=N, 3=B, 4=R, 5=Q
-            if (promo as usize) < promo_chars.len() {
-                uci.push(promo_chars[promo as usize]);
-            }
-        }
-
-        Ok(uci)
+        Ok(format_uci(from_sq, to_sq, promo))
     }
 
-    /// Get all moves as UCI strings.
+    /// Get all moves as UCI strings (e.g. ["e2e4", "e7e5", "g1f3"]).
     fn moves_uci(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        let borrowed = self.data.borrow(py);
+        let chunk = &borrowed.chunks[self.chunk_idx];
+
+        let from_arr = chunk.from_squares.bind(py);
+        let from_arr: &Bound<'_, PyArray1<u8>> = from_arr.cast()?;
+        let to_arr = chunk.to_squares.bind(py);
+        let to_arr: &Bound<'_, PyArray1<u8>> = to_arr.cast()?;
+        let promo_arr = chunk.promotions.bind(py);
+        let promo_arr: &Bound<'_, PyArray1<i8>> = promo_arr.cast()?;
+
+        let from_slice = from_arr.readonly();
+        let from_slice = from_slice.as_slice()?;
+        let to_slice = to_arr.readonly();
+        let to_slice = to_slice.as_slice()?;
+        let promo_slice = promo_arr.readonly();
+        let promo_slice = promo_slice.as_slice()?;
+
         let n_moves = self.move_end - self.move_start;
         let mut result = Vec::with_capacity(n_moves);
-        for i in 0..n_moves {
-            result.push(self.move_uci(py, i)?);
+        for i in self.move_start..self.move_end {
+            result.push(format_uci(from_slice[i], to_slice[i], promo_slice[i]));
         }
         Ok(result)
     }

@@ -20,6 +20,19 @@ pub struct ParseConfig {
     pub store_legal_moves: bool,
 }
 
+/// Compute CSR-style prefix-sum offsets from a slice of counts.
+/// Returns a Vec of length `counts.len() + 1`, starting with 0.
+fn prefix_sum(counts: &[u32]) -> Vec<u32> {
+    let mut offsets = Vec::with_capacity(counts.len() + 1);
+    let mut acc: u32 = 0;
+    offsets.push(0);
+    for &count in counts {
+        acc += count;
+        offsets.push(acc);
+    }
+    offsets
+}
+
 /// Accumulated buffers for multiple parsed games.
 ///
 /// This struct holds all data in a struct-of-arrays layout, optimized for:
@@ -52,6 +65,7 @@ pub struct Buffers {
     pub valid: Vec<bool>,
     pub headers: Vec<HashMap<String, String>>,
     pub outcome: Vec<Option<String>>, // "White", "Black", "Draw", "Unknown", or None
+    pub parse_errors: Vec<Option<String>>, // Per-game: None if valid, Some(msg) if not
 
     // Optional: raw text comments (per-move), only populated when store_comments=true
     pub comments: Vec<Option<String>>,
@@ -104,6 +118,7 @@ impl Buffers {
             valid: Vec::with_capacity(estimated_games),
             headers: Vec::with_capacity(estimated_games),
             outcome: Vec::with_capacity(estimated_games),
+            parse_errors: Vec::with_capacity(estimated_games),
 
             // Optional comments
             comments: if config.store_comments {
@@ -152,34 +167,19 @@ impl Buffers {
         self.boards.len() / 64
     }
 
-    /// Compute CSR-style offsets from counts.
+    /// Compute CSR-style offsets from move counts.
     pub fn compute_move_offsets(&self) -> Vec<u32> {
-        let mut offsets = Vec::with_capacity(self.move_counts.len() + 1);
-        offsets.push(0);
-        for &count in &self.move_counts {
-            offsets.push(offsets.last().unwrap() + count);
-        }
-        offsets
+        prefix_sum(&self.move_counts)
     }
 
     /// Compute CSR-style offsets from position counts.
     pub fn compute_position_offsets(&self) -> Vec<u32> {
-        let mut offsets = Vec::with_capacity(self.position_counts.len() + 1);
-        offsets.push(0);
-        for &count in &self.position_counts {
-            offsets.push(offsets.last().unwrap() + count);
-        }
-        offsets
+        prefix_sum(&self.position_counts)
     }
 
     /// Compute CSR-style offsets from legal move counts (per position).
     pub fn compute_legal_move_offsets(&self) -> Vec<u32> {
-        let mut offsets = Vec::with_capacity(self.legal_move_counts.len() + 1);
-        offsets.push(0);
-        for &count in &self.legal_move_counts {
-            offsets.push(offsets.last().unwrap() + count);
-        }
-        offsets
+        prefix_sum(&self.legal_move_counts)
     }
 
     /// Total number of legal moves stored across all positions.
@@ -199,6 +199,7 @@ pub struct GameVisitor<'a> {
     valid_moves: bool,
     current_headers: Vec<(String, String)>,
     current_outcome: Option<String>,
+    current_error: Option<String>,
     // Track counts for current game
     current_move_count: u32,
     current_position_count: u32,
@@ -213,6 +214,7 @@ impl<'a> GameVisitor<'a> {
             valid_moves: true,
             current_headers: Vec::with_capacity(10),
             current_outcome: None,
+            current_error: None,
             current_move_count: 0,
             current_position_count: 0,
         }
@@ -293,6 +295,12 @@ impl<'a> GameVisitor<'a> {
             .push(self.pos.legal_moves().len() as u16);
     }
 
+    /// Record a parse error for the current game.
+    fn set_error(&mut self, msg: String) {
+        self.valid_moves = false;
+        self.current_error = Some(msg);
+    }
+
     /// Finalize current game - record per-game data.
     fn finalize_game(&mut self) {
         self.buffers.move_counts.push(self.current_move_count);
@@ -301,6 +309,7 @@ impl<'a> GameVisitor<'a> {
             .push(self.current_position_count);
         self.buffers.valid.push(self.valid_moves);
         self.buffers.outcome.push(self.current_outcome.take());
+        self.buffers.parse_errors.push(self.current_error.take());
 
         // Convert headers to HashMap
         let header_map: HashMap<String, String> = self.current_headers.drain(..).collect();
@@ -334,6 +343,7 @@ impl Visitor for GameVisitor<'_> {
         self.current_headers = tags;
         self.valid_moves = true;
         self.current_outcome = None;
+        self.current_error = None;
         self.current_move_count = 0;
         self.current_position_count = 0;
 
@@ -364,15 +374,13 @@ impl Visitor for GameVisitor<'_> {
                 Ok(fen) => match fen.into_position(castling_mode) {
                     Ok(pos) => self.pos = pos,
                     Err(e) => {
-                        eprintln!("invalid FEN position: {}", e);
+                        self.set_error(format!("invalid FEN position: {}", e));
                         self.pos = Chess::default();
-                        self.valid_moves = false;
                     }
                 },
                 Err(e) => {
-                    eprintln!("failed to parse FEN: {}", e);
+                    self.set_error(format!("failed to parse FEN: {}", e));
                     self.pos = Chess::default();
-                    self.valid_moves = false;
                 }
             }
         } else {
@@ -407,17 +415,12 @@ impl Visitor for GameVisitor<'_> {
                             self.push_move(from as u8, to as u8, promotion.map(|p| p as u8));
                         }
                         _ => {
-                            eprintln!(
-                                "Unexpected UCI move type: {:?}. Game moves might be invalid.",
-                                uci_move_obj
-                            );
-                            self.valid_moves = false;
+                            self.set_error(format!("unexpected UCI move type: {:?}", uci_move_obj));
                         }
                     }
                 }
                 Err(err) => {
-                    eprintln!("error in game: {} {}", err, san_plus);
-                    self.valid_moves = false;
+                    self.set_error(format!("illegal move: {} {}", err, san_plus));
                 }
             }
         }
