@@ -1332,7 +1332,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rust_pgn_reader_python_binding"
-version = "3.4.0"
+version = "4.0.0"
 dependencies = [
  "arrow",
  "arrow-array",
