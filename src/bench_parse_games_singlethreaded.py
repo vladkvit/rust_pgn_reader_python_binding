@@ -6,14 +6,11 @@ from datetime import datetime
 file_path = "2013-07-train-00000-of-00001.parquet"
 
 pf = pq.ParquetFile(file_path)
-pylist = pf.read(columns=["movetext"]).column("movetext").to_pylist()
+movetext_arrow_array = pf.read(columns=["movetext"]).column("movetext")
 
 a = datetime.now()
 
-for row in pylist:
-    result = rust_pgn_reader_python_binding.parse_game(row)
-    game = result[0]
-    moves = game.moves_uci()
+result = rust_pgn_reader_python_binding.parse_games(movetext_arrow_array, num_threads=1)
 
 b = datetime.now()
 print(b - a)
