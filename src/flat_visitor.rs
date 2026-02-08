@@ -722,4 +722,125 @@ mod tests {
         // Total legal moves stored
         assert_eq!(buffers.legal_move_from_squares.len(), 40);
     }
+
+    #[test]
+    fn test_parse_game_without_headers() {
+        let pgn = "1. Nf3 d5 2. e4 c5 3. exd5 e5 4. dxe6 0-1";
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // valid game
+        assert_eq!(buffers.num_games(), 1);
+        assert_eq!(buffers.total_moves(), 7);
+        assert_eq!(buffers.outcome[0], Some("Black".to_string()));
+    }
+
+    #[test]
+    fn test_parse_game_with_standard_fen() {
+        // A game starting from a mid-game position
+        let pgn = r#"[FEN "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
+
+3. Bb5 a6 4. Ba4 Nf6 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // valid game
+        assert_eq!(buffers.total_moves(), 4);
+    }
+
+    #[test]
+    fn test_parse_chess960_game() {
+        // Chess960 game with custom starting position
+        let pgn = r#"[Variant "chess960"]
+[FEN "brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1"]
+
+1. g3 d5 2. d4 g6 3. b3 Nf6 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Chess960 moves should be valid with proper FEN"
+        );
+        assert_eq!(buffers.total_moves(), 6);
+    }
+
+    #[test]
+    fn test_parse_chess960_variant_case_insensitive() {
+        // Test that variant detection is case-insensitive
+        let pgn = r#"[Variant "Chess960"]
+[FEN "brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1"]
+
+1. g3 d5 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "Should handle Chess960 case variations");
+    }
+
+    #[test]
+    fn test_parse_invalid_fen_falls_back() {
+        // Invalid FEN should fall back to default and mark invalid
+        let pgn = r#"[FEN "invalid fen string"]
+
+1. e4 e5 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "Should mark as invalid when FEN parsing fails"
+        );
+    }
+
+    #[test]
+    fn test_fen_header_case_insensitive() {
+        // FEN header key should be case-insensitive
+        let pgn = r#"[fen "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
+
+3. Bb5 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "Should handle lowercase 'fen' header");
+    }
+
+    #[test]
+    fn test_parse_game_with_custom_fen_no_variant() {
+        // Standard chess from a mid-game position (no Variant header)
+        // Position after 1.e4 e5 2.Nf3 Nc6 3.Bb5 (Ruy Lopez)
+        let pgn = r#"[Event "Test Game"]
+[FEN "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"]
+
+3... a6 4. Ba4 Nf6 5. O-O Be7 1-0"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Standard game with custom FEN should be valid"
+        );
+        assert_eq!(buffers.total_moves(), 5); // a6, Ba4, Nf6, O-O, Be7
+    }
 }
