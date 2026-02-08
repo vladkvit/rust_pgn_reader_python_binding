@@ -1329,6 +1329,7 @@ dependencies = [
  "criterion",
  "nom",
  "num_cpus",
+ "numpy",
  "parquet",
  "pgn-reader",
  "pyo3",

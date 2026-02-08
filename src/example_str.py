@@ -1,4 +1,5 @@
 import rust_pgn_reader_python_binding
+import numpy as np
 
 pgn_moves = """
 1. e4 { [%eval 0.17] [%clk 0:00:30] } 1... c5 { [%eval 0.19] [%clk 0:00:30] }
@@ -16,16 +17,16 @@ pgn_moves = """
 13. b3?? { [%eval -4.14] [%clk 0:00:02] } 13... Nf4? { [%eval -2.73] [%clk 0:00:21] } 0-1
 """
 
-extractor = rust_pgn_reader_python_binding.parse_game(pgn_moves)
+result = rust_pgn_reader_python_binding.parse_game(pgn_moves, store_comments=True)
+game = result[0]
 
-print(extractor.moves)
-print(extractor.comments)
-print(extractor.valid_moves)
-print(extractor.evals)
-print(extractor.clock_times)
-print(extractor.outcome)
-assert extractor.position_status is not None
-print(extractor.position_status.is_checkmate)
-print(extractor.position_status.is_stalemate)
-print(extractor.position_status.is_game_over)
-print(extractor.position_status.legal_move_count)
+print("Moves (UCI):", game.moves_uci())
+print("Comments:", game.comments)
+print("Valid:", game.is_valid)
+print("Evals:", game.evals.tolist())
+print("Clocks:", game.clocks.tolist())
+print("Outcome:", game.outcome)
+print("Is checkmate:", game.is_checkmate)
+print("Is stalemate:", game.is_stalemate)
+print("Is game over:", game.is_game_over)
+print("Legal move count:", game.legal_move_count)

@@ -18,11 +18,12 @@ rayon = "1.11"
 num_cpus = "1.17"
 arrow-array = "57"
 pyo3-arrow = "0.15"
+numpy = "0.27"
+parquet = "57"
+arrow = "57"
 
 [dev-dependencies]
 criterion = "0.8"
-parquet = "57"
-arrow = "57"
 
 [[bench]]
 harness = false
