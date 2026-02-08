@@ -35,13 +35,15 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459 games) on a 
 
 To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 
-`python src/bench_parquet.py` (single-threaded parse_game from parquet)
+`python src/bench_parse_games.py` (recommended — multithreaded parse_games via Arrow)
 
-`python src/bench_parquet_parallel.py` (multithreaded parse_games_from_strings)
+`python src/bench_parse_games_from_strings.py` (multithreaded parse_games_from_strings)
 
-`python src/bench_parquet_arrow.py` (multithreaded parse_games from Arrow)
+`python src/bench_parse_game.py` (single-threaded parse_game from parquet)
 
-`python src/bench_parse_games.py 2013-07-train-00000-of-00001.parquet` (full benchmark with data access)
+`python src/bench_parse_game_pgn.py` (single-threaded parse_game from .pgn file)
+
+`python src/bench_data_access.py 2013-07-train-00000-of-00001.parquet` (parsing + data access + memory)
 
 ## Building
 `maturin develop`
