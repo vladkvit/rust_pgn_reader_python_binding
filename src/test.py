@@ -763,6 +763,187 @@ class TestParsedGames(unittest.TestCase):
         self.assertEqual(len(moves1), 14)
         self.assertEqual(moves1[0], "e2e4")
 
+    def test_multithreaded_correctness(self):
+        """Test that multithreaded parsing produces correct results across chunk boundaries."""
+        # Generate enough games to force multiple chunks with 4 threads
+        pgns = []
+        for i in range(40):
+            if i % 3 == 0:
+                pgns.append("1. e4 e5 2. Nf3 Nc6 1-0")
+            elif i % 3 == 1:
+                pgns.append("1. d4 d5 0-1")
+            else:
+                pgns.append("1. c4 e5 2. Nc3 1/2-1/2")
+
+        # Parse single-threaded as reference
+        result_1t = rust_pgn_reader_python_binding.parse_games_from_strings(
+            pgns, num_threads=1
+        )
+
+        # Parse multi-threaded
+        result_4t = rust_pgn_reader_python_binding.parse_games_from_strings(
+            pgns, num_threads=4
+        )
+
+        # Same totals
+        self.assertEqual(result_1t.num_games, result_4t.num_games)
+        self.assertEqual(result_1t.num_moves, result_4t.num_moves)
+        self.assertEqual(result_1t.num_positions, result_4t.num_positions)
+        self.assertEqual(result_4t.num_games, 40)
+
+        # Multiple chunks were actually created
+        self.assertGreater(result_4t.num_chunks, 1)
+
+        # Every game matches: moves, outcome, validity
+        for i in range(40):
+            g1 = result_1t[i]
+            g4 = result_4t[i]
+            self.assertEqual(g1.moves_uci(), g4.moves_uci(), f"Game {i} moves differ")
+            self.assertEqual(g1.outcome, g4.outcome, f"Game {i} outcome differs")
+            self.assertEqual(g1.is_valid, g4.is_valid, f"Game {i} validity differs")
+
+        # position_to_game works across chunk boundaries
+        all_pos = np.arange(result_4t.num_positions)
+        game_ids = result_4t.position_to_game(all_pos)
+        game_ids_1t = result_1t.position_to_game(all_pos)
+        np.testing.assert_array_equal(game_ids, game_ids_1t)
+
+        # move_to_game works across chunk boundaries
+        all_moves = np.arange(result_4t.num_moves)
+        move_game_ids = result_4t.move_to_game(all_moves)
+        move_game_ids_1t = result_1t.move_to_game(all_moves)
+        np.testing.assert_array_equal(move_game_ids, move_game_ids_1t)
+
+    def test_empty_inputs(self):
+        """Test empty inputs return valid empty results."""
+        # parse_games_from_strings with empty list
+        result = rust_pgn_reader_python_binding.parse_games_from_strings([])
+        self.assertEqual(result.num_games, 0)
+        self.assertEqual(result.num_moves, 0)
+        self.assertEqual(result.num_positions, 0)
+        self.assertEqual(len(result), 0)
+
+        # parse_games with empty chunked array
+        chunked = pa.chunked_array([pa.array([], type=pa.string())])
+        result2 = rust_pgn_reader_python_binding.parse_games(chunked)
+        self.assertEqual(result2.num_games, 0)
+        self.assertEqual(len(result2), 0)
+
+    def test_chunk_view_getters(self):
+        """Test PyChunkView exposes correct array shapes and values."""
+        pgns = ["1. e4 e5 1-0", "1. d4 d5 2. c4 0-1"]
+        chunked = pa.chunked_array([pa.array(pgns)])
+        result = rust_pgn_reader_python_binding.parse_games(chunked, num_threads=1)
+
+        self.assertEqual(result.num_chunks, 1)
+        chunk = result.chunks[0]
+
+        # Scalar getters
+        self.assertEqual(chunk.num_games, 2)
+        self.assertEqual(chunk.num_moves, 5)
+        self.assertEqual(chunk.num_positions, 7)
+
+        # Array shapes
+        self.assertEqual(chunk.boards.shape, (7, 8, 8))
+        self.assertEqual(chunk.castling.shape, (7, 4))
+        self.assertEqual(chunk.en_passant.shape, (7,))
+        self.assertEqual(chunk.halfmove_clock.shape, (7,))
+        self.assertEqual(chunk.turn.shape, (7,))
+        self.assertEqual(chunk.from_squares.shape, (5,))
+        self.assertEqual(chunk.to_squares.shape, (5,))
+        self.assertEqual(chunk.promotions.shape, (5,))
+        self.assertEqual(chunk.clocks.shape, (5,))
+        self.assertEqual(chunk.evals.shape, (5,))
+        self.assertEqual(chunk.is_checkmate.shape, (2,))
+        self.assertEqual(chunk.is_stalemate.shape, (2,))
+        self.assertEqual(chunk.is_insufficient.shape, (2, 2))
+        self.assertEqual(chunk.legal_move_count.shape, (2,))
+        self.assertEqual(chunk.valid.shape, (2,))
+
+        # CSR offset shapes
+        self.assertEqual(chunk.move_offsets.shape, (3,))  # 2 games + 1
+        self.assertEqual(chunk.position_offsets.shape, (3,))
+
+        # Vec getters
+        self.assertEqual(len(chunk.headers), 2)
+        self.assertEqual(len(chunk.outcome), 2)
+        self.assertEqual(chunk.outcome[0], "White")
+        self.assertEqual(chunk.outcome[1], "Black")
+
+        # Chunk values match per-game views
+        game0 = result[0]
+        game1 = result[1]
+        np.testing.assert_array_equal(game0.boards, chunk.boards[:3])
+        np.testing.assert_array_equal(game1.boards, chunk.boards[3:])
+
+    def test_legal_moves_from_python(self):
+        """Test legal_moves property returns correct moves for known positions."""
+        pgn = "1. e4 1-0"
+        result = rust_pgn_reader_python_binding.parse_game(pgn, store_legal_moves=True)
+        game = result[0]
+
+        legal = game.legal_moves
+        # 2 positions: initial + after e4
+        self.assertEqual(len(legal), 2)
+
+        # Initial position: 20 legal moves
+        self.assertEqual(len(legal[0]), 20)
+
+        # After e4: black has 20 legal moves
+        self.assertEqual(len(legal[1]), 20)
+
+        # Verify e2e4 is among initial legal moves (from=12, to=28)
+        initial_from_to = [(m[0], m[1]) for m in legal[0]]
+        self.assertIn((12, 28), initial_from_to)  # e2e4
+
+        # Verify d7d5 is among black's legal moves (from=51, to=35)
+        black_from_to = [(m[0], m[1]) for m in legal[1]]
+        self.assertIn((51, 35), black_from_to)  # d7d5
+
+    def test_parse_error_surfaced(self):
+        """Test that parse errors are stored and accessible."""
+        pgns = [
+            "1. e4 e5 1-0",  # Valid
+            "1. e4 Qxd7 1-0",  # Invalid move
+        ]
+        result = rust_pgn_reader_python_binding.parse_games_from_strings(pgns)
+
+        # Valid game: no error
+        self.assertTrue(result[0].is_valid)
+        self.assertIsNone(result[0].parse_error)
+
+        # Invalid game: error message stored
+        self.assertFalse(result[1].is_valid)
+        self.assertIsNotNone(result[1].parse_error)
+        self.assertIn("illegal move", result[1].parse_error)
+
+    def test_parse_error_invalid_fen(self):
+        """Test that invalid FEN produces a parse error."""
+        pgn = '[FEN "invalid fen string"]\n\n1. e4 e5 1-0'
+        result = rust_pgn_reader_python_binding.parse_game(pgn)
+
+        self.assertFalse(result[0].is_valid)
+        self.assertIsNotNone(result[0].parse_error)
+        self.assertIn("FEN", result[0].parse_error)
+
+    def test_repr(self):
+        """Test __repr__ on ParsedGames, PyGameView, PyChunkView."""
+        pgns = ["1. e4 e5 1-0"]
+        result = rust_pgn_reader_python_binding.parse_games_from_strings(pgns)
+
+        # ParsedGames repr
+        r = repr(result)
+        self.assertIn("ParsedGames", r)
+        self.assertIn("1 games", r)
+
+        # PyGameView repr
+        game_repr = repr(result[0])
+        self.assertIn("PyGameView", game_repr)
+
+        # PyChunkView repr
+        chunk_repr = repr(result.chunks[0])
+        self.assertIn("PyChunkView", chunk_repr)
+
 
 if __name__ == "__main__":
     unittest.main()

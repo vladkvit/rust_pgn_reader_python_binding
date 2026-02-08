@@ -10,7 +10,7 @@ crate-type = ["lib", "cdylib"]
 # lib is needed for the native benchmark
 
 [dependencies]
-pyo3 = "0.27.2"
+pyo3 = { version = "0.27.2", features = ["multiple-pymethods"] }
 shakmaty = "0.30"
 pgn-reader = "0.29.0"
 nom = "8.0"
