@@ -7,11 +7,11 @@ use rayon::prelude::*;
 
 mod board_serialization;
 mod comment_parsing;
-mod flat_visitor;
 mod python_bindings;
+mod visitor;
 
-pub use flat_visitor::{Buffers, ParseConfig, parse_game_to_buffers};
 use python_bindings::{ChunkData, ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
+pub use visitor::{Buffers, ParseConfig, parse_game_to_buffers};
 
 /// Parse games from Arrow chunked array into a chunked ParsedGames container.
 ///
