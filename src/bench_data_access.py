@@ -1,11 +1,7 @@
 """
 Benchmark for parse_games() — parsing speed and data access patterns.
-
-Usage:
-    python bench_data_access.py 2013-07-train-00000-of-00001.parquet
 """
 
-import sys
 import time
 
 import numpy as np
@@ -15,11 +11,7 @@ import rust_pgn_reader_python_binding as pgn
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python bench_data_access.py <parquet_file>")
-        return 1
-
-    file_path = sys.argv[1]
+    file_path = "2013-07-train-00000-of-00001.parquet"
     print(f"Loading from: {file_path}")
 
     pf = pq.ParquetFile(file_path)
@@ -92,4 +84,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
