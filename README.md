@@ -27,12 +27,21 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459 games) on a 
 |----------------------------------------------------------------------------|-------------|--------|
 | [rust-pgn-reader](https://github.com/niklasf/rust-pgn-reader/tree/master)  | PGN         | 1s     |
 | rust_pgn_reader_python_binding, parse_games (multithreaded)                | parquet     | 0.35s  |
+| rust_pgn_reader_python_binding, parse_games_from_strings (multithreaded)   | parquet     | 0.5s   |
+| rust_pgn_reader_python_binding, parse_game (single-threaded)               | parquet     | 3.3s   |
+| rust_pgn_reader_python_binding, parse_game (single-threaded)               | PGN         | 4.7s   |
 | [chess-library](https://github.com/Disservin/chess-library)                | PGN         | 2s     |
 | [python-chess](https://github.com/niklasf/python-chess)                    | PGN         | 3+ min |
 
 To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 
-`python src/bench_parse_games.py 2013-07-train-00000-of-00001.parquet`
+`python src/bench_parquet.py` (single-threaded parse_game from parquet)
+
+`python src/bench_parquet_parallel.py` (multithreaded parse_games_from_strings)
+
+`python src/bench_parquet_arrow.py` (multithreaded parse_games from Arrow)
+
+`python src/bench_parse_games.py 2013-07-train-00000-of-00001.parquet` (full benchmark with data access)
 
 ## Building
 `maturin develop`
