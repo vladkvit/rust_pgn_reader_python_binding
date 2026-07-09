@@ -336,7 +336,7 @@ fn parse_games_from_strings(
 }
 
 /// Parser for chess PGN notation
-#[pymodule]
+#[pymodule(gil_used = true)]
 fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_game, m)?)?;
     m.add_function(wrap_pyfunction!(parse_games, m)?)?;
