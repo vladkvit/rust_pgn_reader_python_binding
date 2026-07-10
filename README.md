@@ -50,6 +50,7 @@ To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 For a more thorough tutorial, follow https://lukesalamone.github.io/posts/how-to-create-rust-python-bindings/
 
 ## Profiling
+`samply record --rate 10000 python src\bench_parse_games.py`
 `py-spy record -s -F -f speedscope --output profile.speedscope -- python ./src/bench_parse_games.py`
 
 Linux/WSL-only:
