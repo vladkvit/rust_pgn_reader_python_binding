@@ -2,89 +2,45 @@ use arrow_array::{Array, LargeStringArray, StringArray};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3_arrow::PyChunkedArray;
-use rayon::ThreadPoolBuilder;
-use rayon::prelude::*;
 
 mod board_serialization;
 mod comment_parsing;
 mod flat;
 mod python_bindings;
 mod tokenizer;
-mod visitor;
 
-pub use flat::{FlatOutput, parse_games_flat};
-use python_bindings::{ChunkData, ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
-pub use visitor::{Buffers, ParseConfig, parse_game_to_buffers};
+pub use flat::{FlatOutput, ParseConfig, parse_games_flat};
+use python_bindings::{ParsedGames, ParsedGamesIter, PyGameView};
 
 /// Shared parallel parsing logic for a slice of PGN strings.
 ///
 /// Both `parse_games` and `parse_games_from_strings` delegate here after
-/// extracting their `&str` slices from different input types.
+/// extracting their `&str` slices from different input types. The GIL is
+/// released for the duration of both parsing passes.
 fn parse_str_slices(
     py: Python<'_>,
     slices: &[&str],
     num_threads: usize,
-    chunk_multiplier: usize,
     config: &ParseConfig,
 ) -> PyResult<ParsedGames> {
-    let n_games = slices.len();
-    if n_games == 0 {
-        let empty_chunk = buffers_to_chunk_data(py, Buffers::default())?;
-        return build_parsed_games(py, vec![empty_chunk]);
-    }
-
-    let thread_pool = ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Failed to build thread pool: {}",
-                e
-            ))
-        })?;
-
-    // num_chunks = num_threads * chunk_multiplier (e.g., 16 threads * 1 = 16 chunks)
-    let num_chunks = num_threads * chunk_multiplier;
-    let chunk_size = ((n_games + num_chunks - 1) / num_chunks).max(1);
-    let moves_per_game = 70;
-
-    let chunk_results: Vec<Buffers> = thread_pool.install(|| {
-        slices
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut buffers = Buffers::with_capacity(chunk_size, moves_per_game, config);
-                for &pgn in chunk {
-                    let _ = parse_game_to_buffers(pgn, &mut buffers, config);
-                }
-                buffers
-            })
-            .collect()
-    });
-
-    let chunk_data_vec: Vec<ChunkData> = chunk_results
-        .into_iter()
-        .map(|buf| buffers_to_chunk_data(py, buf))
-        .collect::<PyResult<Vec<_>>>()?;
-
-    build_parsed_games(py, chunk_data_vec)
+    let flat = py
+        .detach(|| parse_games_flat(slices, num_threads, config))
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+    build_parsed_games(py, flat)
 }
 
-/// Parse games from Arrow chunked array into a chunked ParsedGames container.
+/// Parse games from an Arrow chunked array into a flat ParsedGames container.
 ///
-/// This implementation uses explicit chunking with a fixed number of chunks
-/// (num_chunks = num_threads * chunk_multiplier) to avoid the allocation storm
-/// caused by Rayon's dynamic work-stealing with fold_with.
-///
-/// Each chunk gets exactly one Buffers instance. Instead of merging all
-/// chunks into a single buffer (which was memory-bandwidth-bound), we keep
-/// the per-thread buffers and provide virtual indexing across them.
+/// Two-pass implementation: a parallel counting pass computes exact output
+/// sizes and per-game offsets, then a parallel parsing pass writes every
+/// game into its precomputed disjoint range of single flat output arrays
+/// (rayon work stealing over small tasks; output order == input order).
 #[pyfunction]
-#[pyo3(signature = (pgn_chunked_array, num_threads=None, chunk_multiplier=None, store_comments=false, store_legal_moves=false))]
+#[pyo3(signature = (pgn_chunked_array, num_threads=None, store_comments=false, store_legal_moves=false))]
 fn parse_games(
     py: Python<'_>,
     pgn_chunked_array: PyChunkedArray,
     num_threads: Option<usize>,
-    chunk_multiplier: Option<usize>,
     store_comments: bool,
     store_legal_moves: bool,
 ) -> PyResult<ParsedGames> {
@@ -93,10 +49,6 @@ fn parse_games(
         store_legal_moves,
     };
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
-    // Default multiplier of 1 means exactly num_threads chunks (one per thread).
-    // Higher values (e.g., 4) create more chunks for better load balancing
-    // at the cost of slightly more complex indexing.
-    let chunk_multiplier = chunk_multiplier.unwrap_or(1);
 
     // Extract PGN strings from Arrow chunks
     let num_elements: usize = pgn_chunked_array.chunks().iter().map(|c| c.len()).sum();
@@ -122,182 +74,101 @@ fn parse_games(
         }
     }
 
-    parse_str_slices(py, &pgn_str_slices, num_threads, chunk_multiplier, &config)
+    parse_str_slices(py, &pgn_str_slices, num_threads, &config)
 }
 
-/// Convert a single Buffers into a ChunkData with NumPy arrays.
-fn buffers_to_chunk_data(py: Python<'_>, buffers: Buffers) -> PyResult<ChunkData> {
-    let n_games = buffers.num_games();
-    let total_positions = buffers.total_positions();
-    let total_moves = buffers.total_moves();
+/// Convert a FlatOutput into a ParsedGames with NumPy arrays (zero-copy).
+fn build_parsed_games(py: Python<'_>, flat: FlatOutput) -> PyResult<ParsedGames> {
+    let num_games = flat.num_games;
+    let num_moves = flat.total_moves;
+    let num_positions = flat.total_positions;
+    let num_legal_moves = flat.legal_move_from_squares.len();
 
-    // Compute all CSR offsets BEFORE any from_vec calls consume buffer fields
-    let move_offsets_vec = buffers.compute_move_offsets();
-    let position_offsets_vec = buffers.compute_position_offsets();
-    let has_legal_moves = !buffers.legal_move_counts.is_empty();
-    let legal_move_offsets_vec = if has_legal_moves {
-        buffers.compute_legal_move_offsets()
-    } else {
-        Vec::new()
-    };
-    let total_legal_moves_count = buffers.total_legal_moves();
+    // Rust-side offset copies for fast PyGameView construction.
+    let move_offsets_rs = flat.move_offsets.clone();
+    let position_offsets_rs = flat.position_offsets.clone();
+    let parsed_move_counts_rs = flat.parsed_move_counts.clone();
 
     // Boards: reshape from flat to (N_positions, 8, 8)
-    let boards_array = PyArray1::from_vec(py, buffers.boards);
+    let boards_array = PyArray1::from_vec(py, flat.boards);
     let boards_reshaped = boards_array
-        .reshape([total_positions, 8, 8])
+        .reshape([num_positions, 8, 8])
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     // Castling: reshape from flat to (N_positions, 4)
-    let castling_array = PyArray1::from_vec(py, buffers.castling);
+    let castling_array = PyArray1::from_vec(py, flat.castling);
     let castling_reshaped = castling_array
-        .reshape([total_positions, 4])
+        .reshape([num_positions, 4])
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    // 1D arrays
-    let en_passant_array = PyArray1::from_vec(py, buffers.en_passant);
-    let halfmove_clock_array = PyArray1::from_vec(py, buffers.halfmove_clock);
-    let turn_array = PyArray1::from_vec(py, buffers.turn);
-
-    let from_squares_array = PyArray1::from_vec(py, buffers.from_squares);
-    let to_squares_array = PyArray1::from_vec(py, buffers.to_squares);
-    let promotions_array = PyArray1::from_vec(py, buffers.promotions);
-    let clocks_array = PyArray1::from_vec(py, buffers.clocks);
-    let evals_array = PyArray1::from_vec(py, buffers.evals);
-
-    let move_offsets_array = PyArray1::from_vec(py, move_offsets_vec);
-    let position_offsets_array = PyArray1::from_vec(py, position_offsets_vec);
-
-    let is_checkmate_array = PyArray1::from_vec(py, buffers.is_checkmate);
-    let is_stalemate_array = PyArray1::from_vec(py, buffers.is_stalemate);
-
-    let is_insufficient_array = PyArray1::from_vec(py, buffers.is_insufficient);
+    // Insufficient material: reshape from flat to (N_games, 2)
+    let is_insufficient_array = PyArray1::from_vec(py, flat.is_insufficient);
     let is_insufficient_reshaped = is_insufficient_array
-        .reshape([n_games, 2])
+        .reshape([num_games, 2])
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
-    let legal_move_count_array = PyArray1::from_vec(py, buffers.legal_move_count);
-    let valid_array = PyArray1::from_vec(py, buffers.valid);
-
-    let legal_move_from_squares_array = PyArray1::from_vec(py, buffers.legal_move_from_squares);
-    let legal_move_to_squares_array = PyArray1::from_vec(py, buffers.legal_move_to_squares);
-    let legal_move_promotions_array = PyArray1::from_vec(py, buffers.legal_move_promotions);
-    let legal_move_offsets_array = PyArray1::from_vec(py, legal_move_offsets_vec);
-
-    Ok(ChunkData {
-        boards: boards_reshaped.unbind().into_any(),
-        castling: castling_reshaped.unbind().into_any(),
-        en_passant: en_passant_array.unbind().into_any(),
-        halfmove_clock: halfmove_clock_array.unbind().into_any(),
-        turn: turn_array.unbind().into_any(),
-        from_squares: from_squares_array.unbind().into_any(),
-        to_squares: to_squares_array.unbind().into_any(),
-        promotions: promotions_array.unbind().into_any(),
-        clocks: clocks_array.unbind().into_any(),
-        evals: evals_array.unbind().into_any(),
-        move_offsets: move_offsets_array.unbind().into_any(),
-        position_offsets: position_offsets_array.unbind().into_any(),
-        is_checkmate: is_checkmate_array.unbind().into_any(),
-        is_stalemate: is_stalemate_array.unbind().into_any(),
-        is_insufficient: is_insufficient_reshaped.unbind().into_any(),
-        legal_move_count: legal_move_count_array.unbind().into_any(),
-        valid: valid_array.unbind().into_any(),
-        headers: buffers.headers,
-        outcome: buffers.outcome,
-        parse_errors: buffers.parse_errors,
-        comments: buffers.comments,
-        legal_move_from_squares: legal_move_from_squares_array.unbind().into_any(),
-        legal_move_to_squares: legal_move_to_squares_array.unbind().into_any(),
-        legal_move_promotions: legal_move_promotions_array.unbind().into_any(),
-        legal_move_offsets: legal_move_offsets_array.unbind().into_any(),
-        num_games: n_games,
-        num_moves: total_moves,
-        num_positions: total_positions,
-        num_legal_moves: total_legal_moves_count,
-    })
-}
-
-/// Build a ParsedGames from a Vec of ChunkData.
-///
-/// Computes prefix-sum boundary arrays and global CSR offsets for
-/// position_to_game / move_to_game.
-fn build_parsed_games(py: Python<'_>, chunks: Vec<ChunkData>) -> PyResult<ParsedGames> {
-    let mut total_games: usize = 0;
-    let mut total_moves: usize = 0;
-    let mut total_positions: usize = 0;
-
-    // Build boundary arrays (prefix sums)
-    let mut game_boundaries = Vec::with_capacity(chunks.len() + 1);
-    let mut move_boundaries = Vec::with_capacity(chunks.len() + 1);
-    let mut position_boundaries = Vec::with_capacity(chunks.len() + 1);
-
-    game_boundaries.push(0);
-    move_boundaries.push(0);
-    position_boundaries.push(0);
-
-    for chunk in &chunks {
-        total_games += chunk.num_games;
-        total_moves += chunk.num_moves;
-        total_positions += chunk.num_positions;
-        game_boundaries.push(total_games);
-        move_boundaries.push(total_moves);
-        position_boundaries.push(total_positions);
-    }
-
-    // Build global CSR offsets for position_to_game / move_to_game.
-    // These are the per-chunk local offsets shifted by the chunk's base offset,
-    // concatenated into a single array. Length = total_games + 1.
-    let mut global_move_offsets_vec: Vec<u32> = Vec::with_capacity(total_games + 1);
-    let mut global_position_offsets_vec: Vec<u32> = Vec::with_capacity(total_games + 1);
-
-    for (chunk_idx, chunk) in chunks.iter().enumerate() {
-        let move_base = move_boundaries[chunk_idx] as u32;
-        let pos_base = position_boundaries[chunk_idx] as u32;
-
-        // Read the chunk's local offsets
-        let local_move_offsets = chunk.move_offsets.bind(py);
-        let local_move_offsets: &Bound<'_, PyArray1<u32>> = local_move_offsets.cast()?;
-        let local_move_ro = local_move_offsets.readonly();
-        let local_move_slice = local_move_ro.as_slice()?;
-
-        let local_pos_offsets = chunk.position_offsets.bind(py);
-        let local_pos_offsets: &Bound<'_, PyArray1<u32>> = local_pos_offsets.cast()?;
-        let local_pos_ro = local_pos_offsets.readonly();
-        let local_pos_slice = local_pos_ro.as_slice()?;
-
-        // Append all but the last offset (which is the total for this chunk)
-        // The last chunk's final offset will be added after the loop.
-        for &offset in &local_move_slice[..local_move_slice.len() - 1] {
-            global_move_offsets_vec.push(move_base + offset);
-        }
-        for &offset in &local_pos_slice[..local_pos_slice.len() - 1] {
-            global_position_offsets_vec.push(pos_base + offset);
-        }
-    }
-
-    // Final sentinel value
-    global_move_offsets_vec.push(total_moves as u32);
-    global_position_offsets_vec.push(total_positions as u32);
-
-    let global_move_offsets = PyArray1::from_vec(py, global_move_offsets_vec);
-    let global_position_offsets = PyArray1::from_vec(py, global_position_offsets_vec);
 
     Ok(ParsedGames {
-        chunks,
-        game_boundaries,
-        move_boundaries,
-        position_boundaries,
-        total_games,
-        total_moves,
-        total_positions,
-        global_move_offsets: global_move_offsets.unbind().into_any(),
-        global_position_offsets: global_position_offsets.unbind().into_any(),
+        boards: boards_reshaped.unbind().into_any(),
+        castling: castling_reshaped.unbind().into_any(),
+        en_passant: PyArray1::from_vec(py, flat.en_passant).unbind().into_any(),
+        halfmove_clock: PyArray1::from_vec(py, flat.halfmove_clock)
+            .unbind()
+            .into_any(),
+        turn: PyArray1::from_vec(py, flat.turn).unbind().into_any(),
+        from_squares: PyArray1::from_vec(py, flat.from_squares)
+            .unbind()
+            .into_any(),
+        to_squares: PyArray1::from_vec(py, flat.to_squares).unbind().into_any(),
+        promotions: PyArray1::from_vec(py, flat.promotions).unbind().into_any(),
+        clocks: PyArray1::from_vec(py, flat.clocks).unbind().into_any(),
+        evals: PyArray1::from_vec(py, flat.evals).unbind().into_any(),
+        move_offsets: PyArray1::from_vec(py, flat.move_offsets)
+            .unbind()
+            .into_any(),
+        position_offsets: PyArray1::from_vec(py, flat.position_offsets)
+            .unbind()
+            .into_any(),
+        parsed_move_counts: PyArray1::from_vec(py, flat.parsed_move_counts)
+            .unbind()
+            .into_any(),
+        is_checkmate: PyArray1::from_vec(py, flat.is_checkmate)
+            .unbind()
+            .into_any(),
+        is_stalemate: PyArray1::from_vec(py, flat.is_stalemate)
+            .unbind()
+            .into_any(),
+        is_insufficient: is_insufficient_reshaped.unbind().into_any(),
+        legal_move_count: PyArray1::from_vec(py, flat.legal_move_count)
+            .unbind()
+            .into_any(),
+        valid: PyArray1::from_vec(py, flat.valid).unbind().into_any(),
+        headers: flat.headers,
+        outcome: flat.outcome,
+        parse_errors: flat.parse_errors,
+        comments: flat.comments,
+        legal_move_from_squares: PyArray1::from_vec(py, flat.legal_move_from_squares)
+            .unbind()
+            .into_any(),
+        legal_move_to_squares: PyArray1::from_vec(py, flat.legal_move_to_squares)
+            .unbind()
+            .into_any(),
+        legal_move_promotions: PyArray1::from_vec(py, flat.legal_move_promotions)
+            .unbind()
+            .into_any(),
+        legal_move_offsets: PyArray1::from_vec(py, flat.legal_move_offsets)
+            .unbind()
+            .into_any(),
+        move_offsets_rs,
+        position_offsets_rs,
+        parsed_move_counts_rs,
+        num_games,
+        num_moves,
+        num_positions,
+        num_legal_moves,
     })
 }
 
 /// Parse a single PGN game string.
-///
-/// Convenience wrapper that creates a single-element Arrow array internally.
 #[pyfunction]
 #[pyo3(signature = (pgn, store_comments=false, store_legal_moves=false))]
 fn parse_game(
@@ -306,15 +177,16 @@ fn parse_game(
     store_comments: bool,
     store_legal_moves: bool,
 ) -> PyResult<ParsedGames> {
+    if pgn.trim().is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "No game found in PGN",
+        ));
+    }
     let config = ParseConfig {
         store_comments,
         store_legal_moves,
     };
-    let mut buffers = Buffers::with_capacity(1, 70, &config);
-    parse_game_to_buffers(pgn, &mut buffers, &config)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
-    let chunk = buffers_to_chunk_data(py, buffers)?;
-    build_parsed_games(py, vec![chunk])
+    parse_str_slices(py, &[pgn], 1, &config)
 }
 
 /// Parse multiple PGN game strings in parallel.
@@ -335,7 +207,7 @@ fn parse_games_from_strings(
     };
     let num_threads = num_threads.unwrap_or_else(num_cpus::get);
     let str_slices: Vec<&str> = pgns.iter().map(|s| s.as_str()).collect();
-    parse_str_slices(py, &str_slices, num_threads, 1, &config)
+    parse_str_slices(py, &str_slices, num_threads, &config)
 }
 
 /// Parser for chess PGN notation
@@ -346,7 +218,6 @@ fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_games_from_strings, m)?)?;
     m.add_class::<ParsedGames>()?;
     m.add_class::<PyGameView>()?;
-    m.add_class::<PyChunkView>()?;
     m.add_class::<ParsedGamesIter>()?;
     Ok(())
 }

@@ -162,82 +162,17 @@ class ParsedGamesIter:
     def __iter__(self) -> "ParsedGamesIter": ...
     def __next__(self) -> PyGameView: ...
 
-class PyChunkView:
-    """View into a single chunk's raw numpy arrays.
-
-    Access via ``parsed_games.chunks[i]``. Each chunk corresponds to one
-    parsing thread's output. Use this for advanced access patterns like
-    manual concatenation or custom batching.
-    """
-
-    @property
-    def num_games(self) -> int: ...
-    @property
-    def num_moves(self) -> int: ...
-    @property
-    def num_positions(self) -> int: ...
-    @property
-    def boards(self) -> NDArray[np.uint8]:
-        """Board positions, shape (N_positions, 8, 8), dtype uint8."""
-        ...
-    @property
-    def castling(self) -> NDArray[np.bool_]:
-        """Castling rights [K,Q,k,q], shape (N_positions, 4), dtype bool."""
-        ...
-    @property
-    def en_passant(self) -> NDArray[np.int8]: ...
-    @property
-    def halfmove_clock(self) -> NDArray[np.uint8]: ...
-    @property
-    def turn(self) -> NDArray[np.bool_]: ...
-    @property
-    def from_squares(self) -> NDArray[np.uint8]: ...
-    @property
-    def to_squares(self) -> NDArray[np.uint8]: ...
-    @property
-    def promotions(self) -> NDArray[np.int8]: ...
-    @property
-    def clocks(self) -> NDArray[np.float32]: ...
-    @property
-    def evals(self) -> NDArray[np.float32]: ...
-    @property
-    def move_offsets(self) -> NDArray[np.uint32]: ...
-    @property
-    def position_offsets(self) -> NDArray[np.uint32]: ...
-    @property
-    def is_checkmate(self) -> NDArray[np.bool_]: ...
-    @property
-    def is_stalemate(self) -> NDArray[np.bool_]: ...
-    @property
-    def is_insufficient(self) -> NDArray[np.bool_]: ...
-    @property
-    def legal_move_count(self) -> NDArray[np.uint16]: ...
-    @property
-    def valid(self) -> NDArray[np.bool_]: ...
-    @property
-    def headers(self) -> List[Dict[str, str]]: ...
-    @property
-    def outcome(self) -> List[Optional[str]]: ...
-    @property
-    def parse_errors(self) -> List[Optional[str]]: ...
-    @property
-    def comments(self) -> List[Optional[str]]: ...
-    @property
-    def legal_move_from_squares(self) -> NDArray[np.uint8]: ...
-    @property
-    def legal_move_to_squares(self) -> NDArray[np.uint8]: ...
-    @property
-    def legal_move_promotions(self) -> NDArray[np.int8]: ...
-    @property
-    def legal_move_offsets(self) -> NDArray[np.uint32]: ...
-    def __repr__(self) -> str: ...
-
 class ParsedGames:
-    """Chunked container for parsed chess games, optimized for ML training.
+    """Flat container for parsed chess games, optimized for ML training.
 
-    Internally stores data in multiple chunks (one per parsing thread) to
-    avoid the cost of merging. Per-game access is O(log(num_chunks)) via
-    binary search on precomputed boundaries.
+    All data lives in single flat NumPy arrays indexed by the CSR offset
+    arrays ``move_offsets`` / ``position_offsets`` (length num_games + 1).
+
+    Invalid games (``parse_errors[i] is not None``): their array ranges are
+    sized from a pre-parse token count; only the first
+    ``parsed_move_counts[i]`` moves (and that many + 1 positions) contain
+    data, the remainder of the range is sentinel-filled
+    (promotions/en_passant = -1, clocks/evals = NaN, zeros elsewhere).
 
     Board layout:
         Boards use square indexing: a1=0, b1=1, ..., h8=63
@@ -253,28 +188,148 @@ class ParsedGames:
 
     @property
     def num_moves(self) -> int:
-        """Total number of moves across all games."""
+        """Total number of move slots across all games (== move_offsets[-1])."""
         ...
 
     @property
     def num_positions(self) -> int:
-        """Total number of board positions recorded."""
+        """Total number of board position slots recorded."""
+        ...
+
+    # === Global flat arrays ===
+
+    @property
+    def boards(self) -> NDArray[np.uint8]:
+        """Board positions, shape (num_positions, 8, 8), dtype uint8."""
         ...
 
     @property
-    def num_chunks(self) -> int:
-        """Number of internal chunks."""
+    def castling(self) -> NDArray[np.bool_]:
+        """Castling rights [K,Q,k,q], shape (num_positions, 4), dtype bool."""
         ...
 
-    # === Escape hatch: raw chunk access ===
+    @property
+    def en_passant(self) -> NDArray[np.int8]:
+        """En passant file (-1 if none), shape (num_positions,)."""
+        ...
 
     @property
-    def chunks(self) -> List[PyChunkView]:
-        """Access raw per-chunk data.
+    def halfmove_clock(self) -> NDArray[np.uint8]:
+        """Halfmove clock, shape (num_positions,)."""
+        ...
 
-        Each chunk corresponds to one parsing thread's output. Use this
-        for advanced access patterns like manual concatenation.
-        """
+    @property
+    def turn(self) -> NDArray[np.bool_]:
+        """Side to move (True=white), shape (num_positions,)."""
+        ...
+
+    @property
+    def from_squares(self) -> NDArray[np.uint8]:
+        """From squares, shape (num_moves,)."""
+        ...
+
+    @property
+    def to_squares(self) -> NDArray[np.uint8]:
+        """To squares, shape (num_moves,)."""
+        ...
+
+    @property
+    def promotions(self) -> NDArray[np.int8]:
+        """Promotions (-1=none, 2=N, 3=B, 4=R, 5=Q), shape (num_moves,)."""
+        ...
+
+    @property
+    def clocks(self) -> NDArray[np.float32]:
+        """Clock times in seconds (NaN if missing), shape (num_moves,)."""
+        ...
+
+    @property
+    def evals(self) -> NDArray[np.float32]:
+        """Engine evals (NaN if missing), shape (num_moves,)."""
+        ...
+
+    @property
+    def move_offsets(self) -> NDArray[np.uint32]:
+        """CSR offsets into the move arrays, shape (num_games + 1,)."""
+        ...
+
+    @property
+    def position_offsets(self) -> NDArray[np.uint32]:
+        """CSR offsets into the position arrays, shape (num_games + 1,)."""
+        ...
+
+    @property
+    def parsed_move_counts(self) -> NDArray[np.uint32]:
+        """Actually-parsed moves per game, shape (num_games,).
+
+        Equals ``np.diff(move_offsets)`` for valid games; smaller for
+        invalid games (whose allocated tail is sentinel-filled)."""
+        ...
+
+    @property
+    def is_checkmate(self) -> NDArray[np.bool_]:
+        """Final position is checkmate, shape (num_games,)."""
+        ...
+
+    @property
+    def is_stalemate(self) -> NDArray[np.bool_]:
+        """Final position is stalemate, shape (num_games,)."""
+        ...
+
+    @property
+    def is_insufficient(self) -> NDArray[np.bool_]:
+        """Insufficient material [white, black], shape (num_games, 2)."""
+        ...
+
+    @property
+    def legal_move_count(self) -> NDArray[np.uint16]:
+        """Legal move count in final position, shape (num_games,)."""
+        ...
+
+    @property
+    def valid(self) -> NDArray[np.bool_]:
+        """Whether each game parsed successfully, shape (num_games,)."""
+        ...
+
+    @property
+    def headers(self) -> List[Dict[str, str]]:
+        """Raw PGN headers per game."""
+        ...
+
+    @property
+    def outcome(self) -> List[Optional[str]]:
+        """Outcome per game: 'White', 'Black', 'Draw', 'Unknown', or None."""
+        ...
+
+    @property
+    def parse_errors(self) -> List[Optional[str]]:
+        """Parse error message per game (None if valid)."""
+        ...
+
+    @property
+    def comments(self) -> List[Optional[str]]:
+        """Raw text comments per move (only populated when store_comments=True)."""
+        ...
+
+    @property
+    def legal_move_from_squares(self) -> NDArray[np.uint8]:
+        """Legal-move from squares (only when store_legal_moves=True)."""
+        ...
+
+    @property
+    def legal_move_to_squares(self) -> NDArray[np.uint8]:
+        """Legal-move to squares (only when store_legal_moves=True)."""
+        ...
+
+    @property
+    def legal_move_promotions(self) -> NDArray[np.int8]:
+        """Legal-move promotions (only when store_legal_moves=True)."""
+        ...
+
+    @property
+    def legal_move_offsets(self) -> NDArray[np.uint32]:
+        """CSR offsets into the legal-move arrays per position,
+        shape (num_positions + 1,) (only when store_legal_moves=True)."""
         ...
 
     # === Sequence protocol ===
@@ -348,7 +403,6 @@ def parse_game(
 def parse_games(
     pgn_chunked_array: pyarrow.ChunkedArray,
     num_threads: Optional[int] = None,
-    chunk_multiplier: Optional[int] = None,
     store_comments: bool = False,
     store_legal_moves: bool = False,
 ) -> ParsedGames:
@@ -360,7 +414,6 @@ def parse_games(
     Args:
         pgn_chunked_array: PyArrow ChunkedArray containing PGN strings
         num_threads: Number of threads for parallel parsing (default: all CPUs)
-        chunk_multiplier: Multiplier for number of chunks (default: 1)
         store_comments: Whether to store raw text comments (default: False)
         store_legal_moves: Whether to store legal moves at each position (default: False)
 

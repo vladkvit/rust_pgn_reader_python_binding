@@ -5,20 +5,13 @@
 
 use arrow::array::{Array, StringArray};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rayon::ThreadPoolBuilder;
-use rayon::prelude::*;
 use std::fs::File;
 use std::path::Path;
 use std::time::Instant;
 
-use rust_pgn_reader_python_binding::{Buffers, ParseConfig, parse_game_to_buffers};
+use rust_pgn_reader_python_binding::{ParseConfig, parse_games_flat};
 
 const FILE_PATH: &str = "2013-07-train-00000-of-00001.parquet";
-
-/// Chunk multiplier for explicit chunking.
-/// 1 = exactly num_threads chunks (minimal overhead)
-/// Higher values provide better load balancing at cost of more buffers.
-const CHUNK_MULTIPLIER: usize = 1;
 
 /// Read parquet file and return the raw Arrow StringArrays.
 /// This preserves Arrow's memory layout for zero-copy string access.
@@ -49,7 +42,7 @@ fn read_parquet_to_string_arrays(file_path: &str) -> Vec<StringArray> {
 }
 
 /// Extract &str slices from Arrow StringArrays (zero-copy).
-fn extract_str_slices<'a>(arrays: &'a [StringArray]) -> Vec<&'a str> {
+fn extract_str_slices(arrays: &[StringArray]) -> Vec<&str> {
     let total_len: usize = arrays.iter().map(|a| a.len()).sum();
     let mut slices = Vec::with_capacity(total_len);
 
@@ -67,9 +60,7 @@ fn extract_str_slices<'a>(arrays: &'a [StringArray]) -> Vec<&'a str> {
 ///
 /// 1. Read parquet to Arrow arrays
 /// 2. Extract &str slices from StringArray
-/// 3. Parse in parallel with explicit chunking (par_chunks) -> fixed number of Buffers
-///
-/// No merge step - the chunked architecture keeps per-thread buffers as-is.
+/// 3. Two-pass parallel parse into exact-size flat arrays
 pub fn bench_parse_api() {
     let config = ParseConfig {
         store_comments: false,
@@ -83,64 +74,24 @@ pub fn bench_parse_api() {
     let pgn_slices = extract_str_slices(&arrays);
     println!("Read {} games from parquet.", pgn_slices.len());
 
-    // Step 3: Build thread pool and compute capacity estimates
     let num_threads = num_cpus::get();
-    let n_games = pgn_slices.len();
-    let moves_per_game = 70;
+    println!("Using {} threads (two-pass flat output)", num_threads);
 
-    // Calculate chunk size for explicit chunking
-    let num_chunks = num_threads * CHUNK_MULTIPLIER;
-    let chunk_size = (n_games + num_chunks - 1) / num_chunks;
-    let chunk_size = chunk_size.max(1);
-    let games_per_chunk = chunk_size;
-
-    println!(
-        "Using {} threads, {} chunks, {} games/chunk",
-        num_threads, num_chunks, games_per_chunk
-    );
-
-    let thread_pool = ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .expect("Failed to build Rayon thread pool");
-
-    // Step 4: Parse in parallel using par_chunks
+    // Step 3: Parse with the two-pass flat driver
     let start = Instant::now();
 
-    let chunk_results: Vec<Buffers> = thread_pool.install(|| {
-        pgn_slices
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut buffers = Buffers::with_capacity(games_per_chunk, moves_per_game, &config);
-                for &pgn in chunk {
-                    let _ = parse_game_to_buffers(pgn, &mut buffers, &config);
-                }
-                buffers
-            })
-            .collect()
-    });
+    let flat = parse_games_flat(&pgn_slices, num_threads, &config).expect("parse failed");
 
     let duration_parallel = start.elapsed();
     println!("Parallel parsing time: {:?}", duration_parallel);
     println!(
-        "Created {} Buffers chunks (no merge needed)",
-        chunk_results.len()
-    );
-
-    // Compute totals from chunks
-    let total_games: usize = chunk_results.iter().map(|b| b.num_games()).sum();
-    let total_positions: usize = chunk_results.iter().map(|b| b.total_positions()).sum();
-
-    let duration_total = start.elapsed();
-    println!("Total time (parsing, no merge): {:?}", duration_total);
-    println!(
-        "Parsed {} games, {} total positions.",
-        total_games, total_positions
+        "Parsed {} games, {} total positions, {} total moves.",
+        flat.num_games, flat.total_positions, flat.total_moves
     );
 
     // Measure cleanup time
     let drop_start = Instant::now();
-    drop(chunk_results);
+    drop(flat);
     let drop_duration = drop_start.elapsed();
 
     let total_duration = start.elapsed();
@@ -149,6 +100,6 @@ pub fn bench_parse_api() {
 }
 
 fn main() {
-    println!("=== Parse API (Buffers) ===\n");
+    println!("=== Parse API (flat two-pass) ===\n");
     bench_parse_api();
 }

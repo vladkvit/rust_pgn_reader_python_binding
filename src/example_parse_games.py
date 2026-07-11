@@ -66,20 +66,17 @@ def main():
     print(f"Number of games:     {result.num_games}")
     print(f"Total moves:         {result.num_moves}")
     print(f"Total positions:     {result.num_positions}")
-    print(f"Number of chunks:    {result.num_chunks}")
 
-    # === Chunk Details (escape hatch for raw array access) ===
-    print(f"\n--- Chunk Details ---")
-    for i, chunk in enumerate(result.chunks):
-        print(
-            f"  Chunk {i}: {chunk.num_games} games, "
-            f"{chunk.num_moves} moves, "
-            f"{chunk.num_positions} positions"
-        )
-        print(f"    boards:       {chunk.boards.shape} ({chunk.boards.dtype})")
-        print(
-            f"    from_squares: {chunk.from_squares.shape} ({chunk.from_squares.dtype})"
-        )
+    # === Global Flat Arrays (raw array access) ===
+    print(f"\n--- Flat Arrays ---")
+    print(f"  boards:           {result.boards.shape} ({result.boards.dtype})")
+    print(
+        f"  from_squares:     {result.from_squares.shape} ({result.from_squares.dtype})"
+    )
+    print(
+        f"  move_offsets:     {result.move_offsets.shape} ({result.move_offsets.dtype})"
+    )
+    print(f"  position_offsets: {result.position_offsets.shape}")
 
     # === Iterate Over Games ===
     print(f"\n--- Game Details ---")
@@ -105,10 +102,9 @@ def main():
     # === Direct Array Access for ML ===
     print(f"\n--- ML-Ready Data Access ---")
 
-    # Access boards via chunks (no single merged array)
-    # To concatenate all boards: np.concatenate([c.boards for c in result.chunks])
-    chunk0_boards = result.chunks[0].boards
-    print(f"Chunk 0 boards: {chunk0_boards.shape}")
+    # All boards live in one flat global array
+    all_boards = result.boards
+    print(f"All boards: {all_boards.shape}")
 
     # Get initial position of first game
     game0 = result[0]

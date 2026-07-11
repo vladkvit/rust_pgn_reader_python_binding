@@ -20,11 +20,41 @@ use crate::board_serialization::{
 };
 use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
 use crate::tokenizer::{self, Outcome, Visitor};
-use crate::visitor::{ParseConfig, castling_with_zeros};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
-use shakmaty::{CastlingMode, Chess, Color, Position, fen::Fen, san::SanPlus, uci::UciMove};
+use shakmaty::{
+    CastlingMode, CastlingSide, Chess, Color, Position,
+    fen::Fen,
+    san::{San, SanPlus, Suffix},
+    uci::UciMove,
+};
 use std::collections::HashMap;
+
+/// Configuration for what optional data to store during parsing.
+#[derive(Clone, Debug)]
+pub struct ParseConfig {
+    pub store_comments: bool,
+    pub store_legal_moves: bool,
+}
+
+/// Support castling notated with zeros ("0-0", "0-0-0"), with optional
+/// check/checkmate suffix, matching pgn-reader's explicit handling.
+fn castling_with_zeros(token: &[u8]) -> Option<SanPlus> {
+    let (body, suffix) = match token.last() {
+        Some(b'+') => (&token[..token.len() - 1], Some(Suffix::Check)),
+        Some(b'#') => (&token[..token.len() - 1], Some(Suffix::Checkmate)),
+        _ => (token, None),
+    };
+    let side = match body {
+        b"0-0" => CastlingSide::KingSide,
+        b"0-0-0" => CastlingSide::QueenSide,
+        _ => return None,
+    };
+    Some(SanPlus {
+        san: San::Castle(side),
+        suffix,
+    })
+}
 
 /// Number of games per pass-2 task. Small enough that rayon work stealing
 /// evens out length imbalance between tasks (no straggler tail), large
@@ -705,188 +735,6 @@ pub fn parse_games_flat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::visitor::{Buffers, parse_game_to_buffers};
-
-    /// Differential check: the flat two-pass path must produce the same
-    /// per-game data as the Buffers path for every game. For invalid games
-    /// the flat arrays are compared over the actually-parsed prefix and the
-    /// allocated tail is checked for sentinels.
-    fn assert_flat_matches_buffers(pgns: &[&str], config: &ParseConfig, num_threads: usize) {
-        let flat = parse_games_flat(pgns, num_threads, config).unwrap();
-
-        let mut buffers = Buffers::with_capacity(pgns.len().max(1), 70, config);
-        for &p in pgns {
-            let _ = parse_game_to_buffers(p, &mut buffers, config);
-        }
-
-        assert_eq!(flat.num_games, buffers.num_games(), "game count");
-        let n = flat.num_games;
-        assert_eq!(flat.move_offsets.len(), n + 1);
-        assert_eq!(flat.position_offsets.len(), n + 1);
-
-        let b_move_off = buffers.compute_move_offsets();
-        let b_pos_off = buffers.compute_position_offsets();
-        let b_legal_off = if config.store_legal_moves {
-            buffers.compute_legal_move_offsets()
-        } else {
-            Vec::new()
-        };
-
-        for i in 0..n {
-            let parsed = flat.parsed_move_counts[i] as usize;
-            assert_eq!(
-                parsed as u32, buffers.move_counts[i],
-                "game {i}: parsed moves"
-            );
-            assert_eq!(flat.valid[i], buffers.valid[i], "game {i}: valid");
-            assert_eq!(flat.headers[i], buffers.headers[i], "game {i}: headers");
-            assert_eq!(flat.outcome[i], buffers.outcome[i], "game {i}: outcome");
-            assert_eq!(
-                flat.parse_errors[i], buffers.parse_errors[i],
-                "game {i}: parse_errors"
-            );
-            assert_eq!(flat.is_checkmate[i], buffers.is_checkmate[i], "game {i}");
-            assert_eq!(flat.is_stalemate[i], buffers.is_stalemate[i], "game {i}");
-            assert_eq!(
-                flat.is_insufficient[i * 2..i * 2 + 2],
-                buffers.is_insufficient[i * 2..i * 2 + 2],
-                "game {i}: is_insufficient"
-            );
-            assert_eq!(
-                flat.legal_move_count[i], buffers.legal_move_count[i],
-                "game {i}: legal_move_count"
-            );
-
-            // --- Moves: parsed prefix identical, tail sentinel-filled ---
-            let fm = flat.move_offsets[i] as usize;
-            let bm = b_move_off[i] as usize;
-            let alloc = (flat.move_offsets[i + 1] - flat.move_offsets[i]) as usize;
-            assert!(parsed <= alloc, "game {i}: parsed > allocated");
-
-            assert_eq!(
-                &flat.from_squares[fm..fm + parsed],
-                &buffers.from_squares[bm..bm + parsed],
-                "game {i}: from_squares"
-            );
-            assert_eq!(
-                &flat.to_squares[fm..fm + parsed],
-                &buffers.to_squares[bm..bm + parsed],
-                "game {i}: to_squares"
-            );
-            assert_eq!(
-                &flat.promotions[fm..fm + parsed],
-                &buffers.promotions[bm..bm + parsed],
-                "game {i}: promotions"
-            );
-            for k in 0..parsed {
-                assert_eq!(
-                    flat.clocks[fm + k].to_bits(),
-                    buffers.clocks[bm + k].to_bits(),
-                    "game {i} move {k}: clocks"
-                );
-                assert_eq!(
-                    flat.evals[fm + k].to_bits(),
-                    buffers.evals[bm + k].to_bits(),
-                    "game {i} move {k}: evals"
-                );
-            }
-            if config.store_comments {
-                assert_eq!(
-                    &flat.comments[fm..fm + parsed],
-                    &buffers.comments[bm..bm + parsed],
-                    "game {i}: comments"
-                );
-            }
-            for k in parsed..alloc {
-                assert_eq!(flat.from_squares[fm + k], 0, "game {i}: tail from");
-                assert_eq!(flat.to_squares[fm + k], 0, "game {i}: tail to");
-                assert_eq!(flat.promotions[fm + k], -1, "game {i}: tail promo");
-                assert!(flat.clocks[fm + k].is_nan(), "game {i}: tail clock");
-                assert!(flat.evals[fm + k].is_nan(), "game {i}: tail eval");
-                if config.store_comments {
-                    assert_eq!(flat.comments[fm + k], None, "game {i}: tail comment");
-                }
-            }
-
-            // --- Positions: parsed prefix identical, tail sentinel-filled ---
-            let parsed_pos = parsed + 1;
-            assert_eq!(
-                parsed_pos as u32, buffers.position_counts[i],
-                "game {i}: position count"
-            );
-            let fp = flat.position_offsets[i] as usize;
-            let bp = b_pos_off[i] as usize;
-            let alloc_pos = (flat.position_offsets[i + 1] - flat.position_offsets[i]) as usize;
-            assert_eq!(alloc_pos, alloc + 1);
-
-            assert_eq!(
-                &flat.boards[fp * 64..(fp + parsed_pos) * 64],
-                &buffers.boards[bp * 64..(bp + parsed_pos) * 64],
-                "game {i}: boards"
-            );
-            assert_eq!(
-                &flat.castling[fp * 4..(fp + parsed_pos) * 4],
-                &buffers.castling[bp * 4..(bp + parsed_pos) * 4],
-                "game {i}: castling"
-            );
-            assert_eq!(
-                &flat.en_passant[fp..fp + parsed_pos],
-                &buffers.en_passant[bp..bp + parsed_pos],
-                "game {i}: en_passant"
-            );
-            assert_eq!(
-                &flat.halfmove_clock[fp..fp + parsed_pos],
-                &buffers.halfmove_clock[bp..bp + parsed_pos],
-                "game {i}: halfmove_clock"
-            );
-            assert_eq!(
-                &flat.turn[fp..fp + parsed_pos],
-                &buffers.turn[bp..bp + parsed_pos],
-                "game {i}: turn"
-            );
-            for k in parsed_pos..alloc_pos {
-                assert_eq!(flat.en_passant[fp + k], -1, "game {i}: tail en_passant");
-                assert_eq!(
-                    &flat.boards[(fp + k) * 64..(fp + k + 1) * 64],
-                    &[0u8; 64],
-                    "game {i}: tail board"
-                );
-            }
-
-            // --- Legal moves per position (optional) ---
-            if config.store_legal_moves {
-                for k in 0..parsed_pos {
-                    let fs = flat.legal_move_offsets[fp + k] as usize;
-                    let fe = flat.legal_move_offsets[fp + k + 1] as usize;
-                    let bs = b_legal_off[bp + k] as usize;
-                    let be = b_legal_off[bp + k + 1] as usize;
-                    assert_eq!(fe - fs, be - bs, "game {i} pos {k}: legal count");
-                    assert_eq!(
-                        &flat.legal_move_from_squares[fs..fe],
-                        &buffers.legal_move_from_squares[bs..be],
-                        "game {i} pos {k}: legal from"
-                    );
-                    assert_eq!(
-                        &flat.legal_move_to_squares[fs..fe],
-                        &buffers.legal_move_to_squares[bs..be],
-                        "game {i} pos {k}: legal to"
-                    );
-                    assert_eq!(
-                        &flat.legal_move_promotions[fs..fe],
-                        &buffers.legal_move_promotions[bs..be],
-                        "game {i} pos {k}: legal promo"
-                    );
-                }
-                for k in parsed_pos..alloc_pos {
-                    assert_eq!(
-                        flat.legal_move_offsets[fp + k],
-                        flat.legal_move_offsets[fp + k + 1],
-                        "game {i}: tail position must have zero legal moves"
-                    );
-                }
-            }
-        }
-    }
 
     fn default_config() -> ParseConfig {
         ParseConfig {
@@ -899,6 +747,164 @@ mod tests {
         ParseConfig {
             store_comments: true,
             store_legal_moves: true,
+        }
+    }
+
+    fn parse_one(pgn: &str, config: &ParseConfig) -> FlatOutput {
+        parse_games_flat(&[pgn], 1, config).unwrap()
+    }
+
+    fn bits(v: &[f32]) -> Vec<u32> {
+        v.iter().map(|f| f.to_bits()).collect()
+    }
+
+    /// Full structural equality between two runs (f32 compared bitwise).
+    fn assert_outputs_equal(a: &FlatOutput, b: &FlatOutput) {
+        assert_eq!(a.num_games, b.num_games);
+        assert_eq!(a.total_moves, b.total_moves);
+        assert_eq!(a.total_positions, b.total_positions);
+        assert_eq!(a.boards, b.boards);
+        assert_eq!(a.castling, b.castling);
+        assert_eq!(a.en_passant, b.en_passant);
+        assert_eq!(a.halfmove_clock, b.halfmove_clock);
+        assert_eq!(a.turn, b.turn);
+        assert_eq!(a.from_squares, b.from_squares);
+        assert_eq!(a.to_squares, b.to_squares);
+        assert_eq!(a.promotions, b.promotions);
+        assert_eq!(bits(&a.clocks), bits(&b.clocks));
+        assert_eq!(bits(&a.evals), bits(&b.evals));
+        assert_eq!(a.move_offsets, b.move_offsets);
+        assert_eq!(a.position_offsets, b.position_offsets);
+        assert_eq!(a.parsed_move_counts, b.parsed_move_counts);
+        assert_eq!(a.is_checkmate, b.is_checkmate);
+        assert_eq!(a.is_stalemate, b.is_stalemate);
+        assert_eq!(a.is_insufficient, b.is_insufficient);
+        assert_eq!(a.legal_move_count, b.legal_move_count);
+        assert_eq!(a.valid, b.valid);
+        assert_eq!(a.headers, b.headers);
+        assert_eq!(a.outcome, b.outcome);
+        assert_eq!(a.parse_errors, b.parse_errors);
+        assert_eq!(a.comments, b.comments);
+        assert_eq!(a.legal_move_from_squares, b.legal_move_from_squares);
+        assert_eq!(a.legal_move_to_squares, b.legal_move_to_squares);
+        assert_eq!(a.legal_move_promotions, b.legal_move_promotions);
+        assert_eq!(a.legal_move_offsets, b.legal_move_offsets);
+    }
+
+    /// Assert game `i` of `batch` has identical content to game 0 of
+    /// `single` (a one-game parse of the same PGN).
+    fn assert_game_matches_single(batch: &FlatOutput, i: usize, single: &FlatOutput) {
+        assert_eq!(single.num_games, 1);
+        let parsed = batch.parsed_move_counts[i] as usize;
+        assert_eq!(parsed, single.parsed_move_counts[0] as usize, "game {i}");
+
+        let alloc = (batch.move_offsets[i + 1] - batch.move_offsets[i]) as usize;
+        assert_eq!(alloc, single.move_offsets[1] as usize, "game {i}: alloc");
+
+        let bm = batch.move_offsets[i] as usize;
+        let bp = batch.position_offsets[i] as usize;
+        let alloc_pos = alloc + 1;
+
+        assert_eq!(
+            &batch.boards[bp * 64..(bp + alloc_pos) * 64],
+            &single.boards[..],
+            "game {i}: boards"
+        );
+        assert_eq!(
+            &batch.castling[bp * 4..(bp + alloc_pos) * 4],
+            &single.castling[..],
+            "game {i}: castling"
+        );
+        assert_eq!(
+            &batch.en_passant[bp..bp + alloc_pos],
+            &single.en_passant[..],
+            "game {i}: en_passant"
+        );
+        assert_eq!(
+            &batch.halfmove_clock[bp..bp + alloc_pos],
+            &single.halfmove_clock[..],
+            "game {i}: halfmove_clock"
+        );
+        assert_eq!(
+            &batch.turn[bp..bp + alloc_pos],
+            &single.turn[..],
+            "game {i}: turn"
+        );
+        assert_eq!(
+            &batch.from_squares[bm..bm + alloc],
+            &single.from_squares[..],
+            "game {i}: from_squares"
+        );
+        assert_eq!(
+            &batch.to_squares[bm..bm + alloc],
+            &single.to_squares[..],
+            "game {i}: to_squares"
+        );
+        assert_eq!(
+            &batch.promotions[bm..bm + alloc],
+            &single.promotions[..],
+            "game {i}: promotions"
+        );
+        assert_eq!(
+            bits(&batch.clocks[bm..bm + alloc]),
+            bits(&single.clocks),
+            "game {i}: clocks"
+        );
+        assert_eq!(
+            bits(&batch.evals[bm..bm + alloc]),
+            bits(&single.evals),
+            "game {i}: evals"
+        );
+
+        assert_eq!(batch.valid[i], single.valid[0], "game {i}: valid");
+        assert_eq!(batch.headers[i], single.headers[0], "game {i}: headers");
+        assert_eq!(batch.outcome[i], single.outcome[0], "game {i}: outcome");
+        assert_eq!(
+            batch.parse_errors[i], single.parse_errors[0],
+            "game {i}: parse_errors"
+        );
+        assert_eq!(batch.is_checkmate[i], single.is_checkmate[0], "game {i}");
+        assert_eq!(batch.is_stalemate[i], single.is_stalemate[0], "game {i}");
+        assert_eq!(
+            batch.is_insufficient[i * 2..i * 2 + 2],
+            single.is_insufficient[..],
+            "game {i}: is_insufficient"
+        );
+        assert_eq!(
+            batch.legal_move_count[i], single.legal_move_count[0],
+            "game {i}: legal_move_count"
+        );
+
+        if !batch.comments.is_empty() {
+            assert_eq!(
+                &batch.comments[bm..bm + alloc],
+                &single.comments[..],
+                "game {i}: comments"
+            );
+        }
+        if !batch.legal_move_offsets.is_empty() {
+            for k in 0..alloc_pos {
+                let bs = batch.legal_move_offsets[bp + k] as usize;
+                let be = batch.legal_move_offsets[bp + k + 1] as usize;
+                let ss = single.legal_move_offsets[k] as usize;
+                let se = single.legal_move_offsets[k + 1] as usize;
+                assert_eq!(be - bs, se - ss, "game {i} pos {k}: legal count");
+                assert_eq!(
+                    &batch.legal_move_from_squares[bs..be],
+                    &single.legal_move_from_squares[ss..se],
+                    "game {i} pos {k}: legal from"
+                );
+                assert_eq!(
+                    &batch.legal_move_to_squares[bs..be],
+                    &single.legal_move_to_squares[ss..se],
+                    "game {i} pos {k}: legal to"
+                );
+                assert_eq!(
+                    &batch.legal_move_promotions[bs..be],
+                    &single.legal_move_promotions[ss..se],
+                    "game {i} pos {k}: legal promo"
+                );
+            }
         }
     }
 
@@ -927,30 +933,264 @@ mod tests {
     ];
 
     #[test]
-    fn test_flat_matches_buffers_tricky() {
-        assert_flat_matches_buffers(TRICKY, &default_config(), 2);
+    fn test_batch_matches_individual_parses() {
+        for config in [default_config(), full_config()] {
+            let batch = parse_games_flat(TRICKY, 2, &config).unwrap();
+            let non_empty: Vec<&str> = TRICKY
+                .iter()
+                .copied()
+                .filter(|s| !s.trim().is_empty())
+                .collect();
+            assert_eq!(batch.num_games, non_empty.len());
+            for (i, pgn) in non_empty.iter().enumerate() {
+                let single = parse_one(pgn, &config);
+                assert_game_matches_single(&batch, i, &single);
+            }
+        }
     }
 
     #[test]
-    fn test_flat_matches_buffers_comments_and_legal_moves() {
-        assert_flat_matches_buffers(TRICKY, &full_config(), 2);
-    }
-
-    #[test]
-    fn test_flat_matches_buffers_single_threaded() {
-        assert_flat_matches_buffers(TRICKY, &default_config(), 1);
-    }
-
-    #[test]
-    fn test_flat_matches_buffers_many_games_multi_task() {
+    fn test_thread_count_invariance_multi_task() {
         // More games than GAMES_PER_TASK so pass 2 spans multiple tasks,
-        // with invalid games sprinkled across task boundaries.
+        // with invalid games sprinkled across task boundaries. Output
+        // must be identical regardless of thread/task scheduling.
         let mut pgns: Vec<&str> = Vec::new();
         for i in 0..(3 * GAMES_PER_TASK + 17) {
             pgns.push(TRICKY[i % TRICKY.len()]);
         }
-        assert_flat_matches_buffers(&pgns, &default_config(), 4);
-        assert_flat_matches_buffers(&pgns, &full_config(), 4);
+        for config in [default_config(), full_config()] {
+            let a = parse_games_flat(&pgns, 1, &config).unwrap();
+            let b = parse_games_flat(&pgns, 4, &config).unwrap();
+            assert_outputs_equal(&a, &b);
+        }
+    }
+
+    #[test]
+    fn test_parse_simple_game() {
+        let pgn = "[Event \"Test\"]\n[White \"Player1\"]\n[Black \"Player2\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0";
+        let flat = parse_one(pgn, &default_config());
+
+        assert_eq!(flat.num_games, 1);
+        assert!(flat.valid[0]);
+        assert_eq!(flat.parsed_move_counts[0], 4);
+        assert_eq!(flat.move_offsets, vec![0, 4]);
+        assert_eq!(flat.position_offsets, vec![0, 5]);
+        assert_eq!(flat.total_moves, 4);
+        assert_eq!(flat.total_positions, 5);
+        assert_eq!(flat.outcome[0], Some("White".to_string()));
+        assert_eq!(flat.headers[0].get("Event"), Some(&"Test".to_string()));
+    }
+
+    #[test]
+    fn test_parse_game_with_annotations() {
+        let pgn = "[Event \"Test\"]\n[Result \"1-0\"]\n\n1. e4 { [%eval 0.17] [%clk 0:03:00] } 1... e5 { [%eval 0.19] [%clk 0:02:58] } 1-0";
+        let flat = parse_one(pgn, &default_config());
+
+        assert_eq!(flat.total_moves, 2);
+        assert!((flat.evals[0] - 0.17).abs() < 0.01);
+        assert!((flat.evals[1] - 0.19).abs() < 0.01);
+        assert!((flat.clocks[0] - 180.0).abs() < 0.01);
+        assert!((flat.clocks[1] - 178.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_multiple_games() {
+        let pgns = &[
+            "[Event \"Game1\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0",
+            "[Event \"Game2\"]\n[Result \"0-1\"]\n\n1. d4 d5 2. c4 0-1",
+        ];
+        let flat = parse_games_flat(pgns, 1, &default_config()).unwrap();
+
+        assert_eq!(flat.num_games, 2);
+        assert_eq!(flat.total_moves, 5);
+        assert_eq!(flat.move_offsets, vec![0, 2, 5]);
+        assert_eq!(flat.position_offsets, vec![0, 3, 7]);
+        assert_eq!(flat.outcome[0], Some("White".to_string()));
+        assert_eq!(flat.outcome[1], Some("Black".to_string()));
+    }
+
+    #[test]
+    fn test_outcome_without_headers() {
+        let flat = parse_one("1. e4 e5 2. Nf3 Nc6 0-1", &default_config());
+        assert_eq!(flat.outcome[0], Some("Black".to_string()));
+    }
+
+    #[test]
+    fn test_outcome_draw() {
+        let flat = parse_one("1. e4 e5 1/2-1/2", &default_config());
+        assert_eq!(flat.outcome[0], Some("Draw".to_string()));
+    }
+
+    #[test]
+    fn test_comments_disabled() {
+        let flat = parse_one("1. e4 { a comment } e5 1-0", &default_config());
+        assert!(flat.comments.is_empty());
+    }
+
+    #[test]
+    fn test_comments_enabled() {
+        let config = ParseConfig {
+            store_comments: true,
+            store_legal_moves: false,
+        };
+        let flat = parse_one("1. e4 { a comment } 1... e5 { [%eval 0.19] } 1-0", &config);
+
+        assert_eq!(flat.comments.len(), 2);
+        // Raw text from PGN includes surrounding spaces from the parser
+        assert_eq!(flat.comments[0], Some(" a comment ".to_string()));
+        // The second comment only has an eval tag, so text portion is empty
+        assert_eq!(flat.comments[1], Some("".to_string()));
+    }
+
+    #[test]
+    fn test_legal_moves_disabled() {
+        let flat = parse_one("1. e4 e5 1-0", &default_config());
+        assert!(flat.legal_move_from_squares.is_empty());
+        assert!(flat.legal_move_offsets.is_empty());
+    }
+
+    #[test]
+    fn test_legal_moves_enabled() {
+        let config = ParseConfig {
+            store_comments: false,
+            store_legal_moves: true,
+        };
+        let flat = parse_one("1. e4 1-0", &config);
+
+        // 2 positions: initial + after e4, offsets len = positions + 1
+        assert_eq!(flat.legal_move_offsets.len(), 3);
+        // Initial position has 20 legal moves; after e4, black has 20
+        assert_eq!(flat.legal_move_offsets, vec![0, 20, 40]);
+        assert_eq!(flat.legal_move_from_squares.len(), 40);
+    }
+
+    #[test]
+    fn test_headers_only_game() {
+        // A game with headers but no movetext at all: the initial position
+        // (from the FEN header) must still be recorded.
+        let pgn = "[Event \"Test\"]\n[FEN \"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3\"]\n";
+        let flat = parse_one(pgn, &default_config());
+
+        assert_eq!(flat.num_games, 1);
+        assert!(flat.valid[0]);
+        assert_eq!(flat.parsed_move_counts[0], 0);
+        assert_eq!(flat.position_offsets, vec![0, 1]);
+        assert_eq!(flat.headers[0].get("Event"), Some(&"Test".to_string()));
+        assert_eq!(flat.parse_errors[0], None);
+        assert_eq!(flat.outcome[0], None);
+    }
+
+    #[test]
+    fn test_parse_game_without_headers() {
+        let flat = parse_one(
+            "1. Nf3 d5 2. e4 c5 3. exd5 e5 4. dxe6 0-1",
+            &default_config(),
+        );
+        assert!(flat.valid[0]);
+        assert_eq!(flat.total_moves, 7);
+        assert_eq!(flat.outcome[0], Some("Black".to_string()));
+    }
+
+    #[test]
+    fn test_parse_game_with_standard_fen() {
+        let pgn = "[FEN \"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3\"]\n\n3. Bb5 a6 4. Ba4 Nf6 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(flat.valid[0]);
+        assert_eq!(flat.total_moves, 4);
+    }
+
+    #[test]
+    fn test_parse_chess960_game() {
+        let pgn = "[Variant \"chess960\"]\n[FEN \"brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1\"]\n\n1. g3 d5 2. d4 g6 3. b3 Nf6 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(flat.valid[0], "Chess960 moves should be valid with FEN");
+        assert_eq!(flat.total_moves, 6);
+    }
+
+    #[test]
+    fn test_parse_chess960_variant_case_insensitive() {
+        let pgn = "[Variant \"Chess960\"]\n[FEN \"brkrqnnb/pppppppp/8/8/8/8/PPPPPPPP/BRKRQNNB w KQkq - 0 1\"]\n\n1. g3 d5 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(flat.valid[0], "Should handle Chess960 case variations");
+    }
+
+    #[test]
+    fn test_parse_invalid_fen_falls_back() {
+        let pgn = "[FEN \"invalid fen string\"]\n\n1. e4 e5 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(!flat.valid[0], "invalid FEN should mark game invalid");
+        assert!(
+            flat.parse_errors[0]
+                .as_deref()
+                .unwrap()
+                .starts_with("failed to parse FEN:")
+        );
+        // No moves parsed, but initial (default) position recorded.
+        assert_eq!(flat.parsed_move_counts[0], 0);
+    }
+
+    #[test]
+    fn test_fen_header_case_insensitive() {
+        let pgn = "[fen \"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3\"]\n\n3. Bb5 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(flat.valid[0], "Should handle lowercase 'fen' header");
+    }
+
+    #[test]
+    fn test_parse_game_with_custom_fen_no_variant() {
+        let pgn = "[Event \"Test Game\"]\n[FEN \"r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3\"]\n\n3... a6 4. Ba4 Nf6 5. O-O Be7 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(flat.valid[0]);
+        assert_eq!(flat.total_moves, 5); // a6, Ba4, Nf6, O-O, Be7
+    }
+
+    #[test]
+    fn test_castling_with_zeros_normalized() {
+        let pgn = "1. e4 e5 2. Nf3 Nf6 3. Bc4 Bc5 4. 0-0 0-0 1-0";
+        let flat = parse_one(pgn, &default_config());
+        assert!(flat.valid[0], "zeros castling should parse as O-O");
+        assert_eq!(flat.total_moves, 8);
+        assert_eq!(flat.parse_errors[0], None);
+    }
+
+    #[test]
+    fn test_invalid_san_sets_parse_error_and_fills_tail() {
+        let flat = parse_one("1. e4 xyzzy9 e5 1-0", &default_config());
+
+        assert!(!flat.valid[0]);
+        let err = flat.parse_errors[0].as_deref().unwrap();
+        assert!(
+            err.starts_with("failed to parse SAN:") && err.contains("xyzzy9"),
+            "unexpected error message: {err}"
+        );
+        // Pass 1 counted 3 tokens; only 1 move parsed.
+        assert_eq!(flat.move_offsets, vec![0, 3]);
+        assert_eq!(flat.parsed_move_counts[0], 1);
+        // Tail move slots are sentinel-filled.
+        for m in 1..3 {
+            assert_eq!(flat.from_squares[m], 0);
+            assert_eq!(flat.promotions[m], -1);
+            assert!(flat.clocks[m].is_nan());
+            assert!(flat.evals[m].is_nan());
+        }
+        // Tail position slots: zero board, en_passant sentinel.
+        for p in 2..4 {
+            assert_eq!(&flat.boards[p * 64..(p + 1) * 64], &[0u8; 64]);
+            assert_eq!(flat.en_passant[p], -1);
+        }
+    }
+
+    #[test]
+    fn test_illegal_move_sets_parse_error() {
+        let flat = parse_one("1. e4 e4 2. Nf3 1-0", &default_config());
+        assert!(!flat.valid[0]);
+        assert!(
+            flat.parse_errors[0]
+                .as_deref()
+                .unwrap()
+                .starts_with("illegal move:")
+        );
+        assert_eq!(flat.parsed_move_counts[0], 1);
     }
 
     #[test]
@@ -984,5 +1224,14 @@ mod tests {
         let flat = parse_games_flat(&["", "1. e4 e5 1-0", "  \n "], 1, &default_config()).unwrap();
         assert_eq!(flat.num_games, 1);
         assert_eq!(flat.parsed_move_counts[0], 2);
+    }
+
+    #[test]
+    fn test_checkmate_status() {
+        let flat = parse_one("1. f3 e5 2. g4 Qh4# 0-1", &default_config());
+        assert!(flat.valid[0]);
+        assert!(flat.is_checkmate[0]);
+        assert!(!flat.is_stalemate[0]);
+        assert_eq!(flat.legal_move_count[0], 0);
     }
 }
