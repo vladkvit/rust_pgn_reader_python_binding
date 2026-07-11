@@ -317,10 +317,9 @@ impl<'a> GameVisitor<'a> {
 }
 
 impl Visitor for GameVisitor<'_> {
-    fn begin_game(&mut self) {}
-
     fn begin_headers(&mut self) {
         self.current_headers.clear();
+        self.current_headers.reserve(10);
         self.valid_moves = true;
         self.current_outcome = None;
         self.current_error = None;
@@ -692,6 +691,28 @@ mod tests {
         assert_eq!(buffers.legal_move_counts[1], 20);
         // Total legal moves stored
         assert_eq!(buffers.legal_move_from_squares.len(), 40);
+    }
+
+    #[test]
+    fn test_headers_only_game() {
+        // A game with headers but no movetext at all: the initial position
+        // (from the FEN header) must still be recorded.
+        let pgn = r#"[Event "Test"]
+[FEN "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"]
+"#;
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // valid game (no moves, no errors)
+        assert_eq!(buffers.num_games(), 1);
+        assert_eq!(buffers.move_counts[0], 0);
+        assert_eq!(buffers.position_counts[0], 1); // initial position only
+        assert_eq!(buffers.headers[0].get("Event"), Some(&"Test".to_string()));
+        assert_eq!(buffers.parse_errors[0], None); // FEN header was applied
+        assert_eq!(buffers.outcome[0], None);
     }
 
     #[test]
