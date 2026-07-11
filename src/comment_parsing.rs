@@ -1,11 +1,11 @@
 use nom::{
+    IResult, Parser,
     branch::alt,
     bytes::complete::{is_not, tag},
     character::complete::{char, digit1},
     combinator::{map, map_res, not, opt, peek, recognize},
     multi::{many0, many1},
     sequence::{delimited, pair, preceded},
-    IResult, Parser,
 };
 use std::borrow::Cow;
 // use nom::character::complete::multispace1;

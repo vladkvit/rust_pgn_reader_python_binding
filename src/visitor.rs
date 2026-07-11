@@ -7,9 +7,9 @@
 use crate::board_serialization::{
     get_castling_rights, get_en_passant_file, get_halfmove_clock, get_turn, serialize_board,
 };
-use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
+use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
 use crate::tokenizer::{Outcome, Visitor};
-use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position, san::SanPlus};
+use shakmaty::{CastlingMode, Chess, Color, Position, fen::Fen, san::SanPlus, uci::UciMove};
 use std::collections::HashMap;
 
 /// Configuration for what optional data to store during parsing.
@@ -502,7 +502,7 @@ pub fn parse_game_to_buffers(
     config: &ParseConfig,
 ) -> Result<bool, String> {
     let mut visitor = GameVisitor::new(buffers, config);
-    
+
     // Check if the PGN string has any non-whitespace characters to emulate pgn-reader's `Ok(None)` behavior
     if pgn.trim().is_empty() {
         return Err("No game found in PGN".to_string());

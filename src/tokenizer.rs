@@ -49,10 +49,14 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
                     break;
                 }
                 cursor += 1;
-                
+
                 // Parse key
                 let key_start = cursor;
-                while cursor < len && bytes[cursor] != b' ' && bytes[cursor] != b'"' && bytes[cursor] != b']' {
+                while cursor < len
+                    && bytes[cursor] != b' '
+                    && bytes[cursor] != b'"'
+                    && bytes[cursor] != b']'
+                {
                     cursor += 1;
                 }
                 let key = &bytes[key_start..cursor];
@@ -61,7 +65,7 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
                 while cursor < len && bytes[cursor] != b'"' {
                     cursor += 1;
                 }
-                
+
                 if cursor < len {
                     cursor += 1; // skip quote
                     let val_start = cursor;
@@ -78,7 +82,7 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
                             cursor += 1;
                         }
                     }
-                    
+
                     visitor.header(key, &bytes[val_start..val_end]);
                 }
 
@@ -166,7 +170,7 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
                     cursor += 1;
                 }
                 let token = &bytes[token_start..cursor];
-                
+
                 if token.is_empty() {
                     cursor += 1;
                     continue;
@@ -182,9 +186,16 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
                 } else if token == b"1/2-1/2" {
                     visitor.outcome(Outcome::Draw);
                     break;
-                } else if memchr(b'.', token).is_some() || token.iter().all(|b| b.is_ascii_digit()) {
+                } else if memchr(b'.', token).is_some() || token.iter().all(|b| b.is_ascii_digit())
+                {
                     // Move number, skip
-                } else if token == b"!" || token == b"?" || token == b"!!" || token == b"??" || token == b"!?" || token == b"?!" {
+                } else if token == b"!"
+                    || token == b"?"
+                    || token == b"!!"
+                    || token == b"??"
+                    || token == b"!?"
+                    || token == b"?!"
+                {
                     // Standalone suffix, ignore
                 } else {
                     // It's a SAN token
@@ -203,5 +214,8 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
 }
 
 fn is_token_delimiter(c: u8) -> bool {
-    matches!(c, b' ' | b'\n' | b'\r' | b'\t' | b'[' | b']' | b'{' | b'}' | b'(' | b')' | b';' | b'*')
+    matches!(
+        c,
+        b' ' | b'\n' | b'\r' | b'\t' | b'[' | b']' | b'{' | b'}' | b'(' | b')' | b';' | b'*'
+    )
 }
