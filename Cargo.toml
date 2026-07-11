@@ -1,6 +1,6 @@
 [package]
 name = "rust_pgn_reader_python_binding"
-version = "4.0.0"
+version = "5.0.0"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,7 +12,7 @@ crate-type = ["lib", "cdylib"]
 [dependencies]
 pyo3 = { version = "0.29", features = ["multiple-pymethods"] }
 shakmaty = "0.30"
-pgn-reader = "0.29.0"
+memchr = "2.7"
 nom = "8.0"
 rayon = "1.11"
 num_cpus = "1.17"

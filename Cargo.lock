@@ -1065,17 +1065,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pgn-reader"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b822a2cfc1c90c109ea35458ad9bff6669198fdd4ea8de1132e702b4d9f64b88"
-dependencies = [
- "btoi",
- "memchr",
- "shakmaty",
-]
-
-[[package]]
 name = "phf"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1317,16 +1306,16 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rust_pgn_reader_python_binding"
-version = "4.0.0"
+version = "5.0.0"
 dependencies = [
  "arrow",
  "arrow-array",
  "criterion",
+ "memchr",
  "nom",
  "num_cpus",
  "numpy",
  "parquet",
- "pgn-reader",
  "pyo3",
  "pyo3-arrow",
  "rayon",

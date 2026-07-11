@@ -31,16 +31,14 @@ def main():
         f"  {result.num_games:,} games, {result.num_moves:,} moves, {result.num_positions:,} positions"
     )
     print(f"  {result.num_games / elapsed:,.0f} games/sec")
-    print(f"  {result.num_chunks} chunks")
 
-    # Data access: chunk-level array access
+    # Data access: global flat arrays
     start = time.perf_counter()
-    for chunk in result.chunks:
-        _ = chunk.boards.sum()
-        _ = chunk.from_squares.sum()
-        _ = chunk.to_squares.sum()
+    _ = result.boards.sum()
+    _ = result.from_squares.sum()
+    _ = result.to_squares.sum()
     elapsed = time.perf_counter() - start
-    print(f"\nChunk array access: {elapsed:.3f}s")
+    print(f"\nFlat array access: {elapsed:.3f}s")
 
     # Data access: per-game views
     n_access = min(1000, result.num_games)
@@ -60,22 +58,20 @@ def main():
     print(f"Position-to-game (1000 lookups): {elapsed * 1000:.3f}ms")
 
     # Memory usage
-    total_bytes = 0
-    for chunk in result.chunks:
-        total_bytes += (
-            chunk.boards.nbytes
-            + chunk.castling.nbytes
-            + chunk.en_passant.nbytes
-            + chunk.halfmove_clock.nbytes
-            + chunk.turn.nbytes
-            + chunk.from_squares.nbytes
-            + chunk.to_squares.nbytes
-            + chunk.promotions.nbytes
-            + chunk.clocks.nbytes
-            + chunk.evals.nbytes
-            + chunk.move_offsets.nbytes
-            + chunk.position_offsets.nbytes
-        )
+    total_bytes = (
+        result.boards.nbytes
+        + result.castling.nbytes
+        + result.en_passant.nbytes
+        + result.halfmove_clock.nbytes
+        + result.turn.nbytes
+        + result.from_squares.nbytes
+        + result.to_squares.nbytes
+        + result.promotions.nbytes
+        + result.clocks.nbytes
+        + result.evals.nbytes
+        + result.move_offsets.nbytes
+        + result.position_offsets.nbytes
+    )
     print(
         f"\nMemory: {total_bytes / 1024 / 1024:.1f} MB ({total_bytes / result.num_positions:.0f} bytes/position)"
     )

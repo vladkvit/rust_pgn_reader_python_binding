@@ -70,3 +70,7 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# Local benchmark data and derived reference dumps
+*.parquet
+*.pgn
