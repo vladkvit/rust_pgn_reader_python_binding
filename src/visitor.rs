@@ -8,10 +8,9 @@ use crate::board_serialization::{
     get_castling_rights, get_en_passant_file, get_halfmove_clock, get_turn, serialize_board,
 };
 use crate::comment_parsing::{parse_comments, CommentContent, ParsedTag};
-use pgn_reader::{KnownOutcome, Outcome, RawComment, RawTag, SanPlus, Skip, Visitor};
-use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position};
+use crate::tokenizer::{Outcome, Visitor};
+use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position, san::SanPlus};
 use std::collections::HashMap;
-use std::ops::ControlFlow;
 
 /// Configuration for what optional data to store during parsing.
 #[derive(Clone, Debug)]
@@ -318,35 +317,24 @@ impl<'a> GameVisitor<'a> {
 }
 
 impl Visitor for GameVisitor<'_> {
-    type Tags = Vec<(String, String)>;
-    type Movetext = ();
-    type Output = bool;
+    fn begin_game(&mut self) {}
 
-    fn begin_tags(&mut self) -> ControlFlow<Self::Output, Self::Tags> {
+    fn begin_headers(&mut self) {
         self.current_headers.clear();
-        ControlFlow::Continue(Vec::with_capacity(10))
-    }
-
-    fn tag(
-        &mut self,
-        tags: &mut Self::Tags,
-        key: &[u8],
-        value: RawTag<'_>,
-    ) -> ControlFlow<Self::Output> {
-        let key_str = String::from_utf8_lossy(key).into_owned();
-        let value_str = String::from_utf8_lossy(value.as_bytes()).into_owned();
-        tags.push((key_str, value_str));
-        ControlFlow::Continue(())
-    }
-
-    fn begin_movetext(&mut self, tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
-        self.current_headers = tags;
         self.valid_moves = true;
         self.current_outcome = None;
         self.current_error = None;
         self.current_move_count = 0;
         self.current_position_count = 0;
+    }
 
+    fn header(&mut self, key: &[u8], value: &[u8]) {
+        let key_str = String::from_utf8_lossy(key).into_owned();
+        let value_str = String::from_utf8_lossy(value).into_owned();
+        self.current_headers.push((key_str, value_str));
+    }
+
+    fn end_headers(&mut self) {
         // Determine castling mode from Variant header (case-insensitive)
         let castling_mode = self
             .current_headers
@@ -389,14 +377,9 @@ impl Visitor for GameVisitor<'_> {
 
         // Record initial board state
         self.push_board_state();
-        ControlFlow::Continue(())
     }
 
-    fn san(
-        &mut self,
-        _movetext: &mut Self::Movetext,
-        san_plus: SanPlus,
-    ) -> ControlFlow<Self::Output> {
+    fn san(&mut self, san_plus: SanPlus) {
         if self.valid_moves {
             match san_plus.san.to_move(&self.pos) {
                 Ok(m) => {
@@ -424,15 +407,17 @@ impl Visitor for GameVisitor<'_> {
                 }
             }
         }
-        ControlFlow::Continue(())
     }
 
-    fn comment(
-        &mut self,
-        _movetext: &mut Self::Movetext,
-        comment: RawComment<'_>,
-    ) -> ControlFlow<Self::Output> {
-        if let Ok((_, parsed_comments)) = parse_comments(comment.as_bytes()) {
+    fn san_error(&mut self, error: shakmaty::san::ParseSanError, token: &[u8]) {
+        if self.valid_moves {
+            let token_str = String::from_utf8_lossy(token);
+            self.set_error(format!("failed to parse SAN: {} ({})", error, token_str));
+        }
+    }
+
+    fn comment(&mut self, comment: &[u8]) {
+        if let Ok((_, parsed_comments)) = parse_comments(comment) {
             let mut move_comments = if self.config.store_comments {
                 Some(String::new())
             } else {
@@ -489,39 +474,24 @@ impl Visitor for GameVisitor<'_> {
                 }
             }
         }
-        ControlFlow::Continue(())
     }
 
-    fn begin_variation(
-        &mut self,
-        _movetext: &mut Self::Movetext,
-    ) -> ControlFlow<Self::Output, Skip> {
-        ControlFlow::Continue(Skip(true)) // Skip variations, stay in mainline
-    }
-
-    fn outcome(
-        &mut self,
-        _movetext: &mut Self::Movetext,
-        _outcome: Outcome,
-    ) -> ControlFlow<Self::Output> {
+    fn outcome(&mut self, _outcome: Outcome) {
         self.current_outcome = Some(match _outcome {
-            Outcome::Known(known) => match known {
-                KnownOutcome::Decisive { winner } => format!("{:?}", winner),
-                KnownOutcome::Draw => "Draw".to_string(),
-            },
+            Outcome::WhiteWins => "White".to_string(),
+            Outcome::BlackWins => "Black".to_string(),
+            Outcome::Draw => "Draw".to_string(),
             Outcome::Unknown => "Unknown".to_string(),
         });
         self.update_position_status();
-        ControlFlow::Continue(())
     }
 
-    fn end_game(&mut self, _movetext: Self::Movetext) -> Self::Output {
+    fn end_game(&mut self) {
         // Handle case where outcome() was not called (e.g., incomplete game)
         if self.buffers.is_checkmate.len() < self.buffers.headers.len() + 1 {
             self.update_position_status();
         }
         self.finalize_game();
-        self.valid_moves
     }
 }
 
@@ -531,17 +501,15 @@ pub fn parse_game_to_buffers(
     buffers: &mut Buffers,
     config: &ParseConfig,
 ) -> Result<bool, String> {
-    use pgn_reader::Reader;
-    use std::io::Cursor;
-
-    let mut reader = Reader::new(Cursor::new(pgn));
     let mut visitor = GameVisitor::new(buffers, config);
-
-    match reader.read_game(&mut visitor) {
-        Ok(Some(valid)) => Ok(valid),
-        Ok(None) => Err("No game found in PGN".to_string()),
-        Err(err) => Err(format!("Parsing error: {}", err)),
+    
+    // Check if the PGN string has any non-whitespace characters to emulate pgn-reader's `Ok(None)` behavior
+    if pgn.trim().is_empty() {
+        return Err("No game found in PGN".to_string());
     }
+
+    crate::tokenizer::parse_game(pgn.as_bytes(), &mut visitor);
+    Ok(visitor.valid_moves)
 }
 
 #[cfg(test)]

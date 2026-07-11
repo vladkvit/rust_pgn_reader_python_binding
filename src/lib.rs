@@ -8,6 +8,7 @@ use rayon::prelude::*;
 mod board_serialization;
 mod comment_parsing;
 mod python_bindings;
+mod tokenizer;
 mod visitor;
 
 use python_bindings::{ChunkData, ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
