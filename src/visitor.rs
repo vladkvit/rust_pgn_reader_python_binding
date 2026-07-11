@@ -194,7 +194,7 @@ impl Buffers {
 
 /// Support castling notated with zeros ("0-0", "0-0-0"), with optional
 /// check/checkmate suffix, matching pgn-reader's explicit handling.
-fn castling_with_zeros(token: &[u8]) -> Option<SanPlus> {
+pub(crate) fn castling_with_zeros(token: &[u8]) -> Option<SanPlus> {
     let (body, suffix) = match token.last() {
         Some(b'+') => (&token[..token.len() - 1], Some(Suffix::Check)),
         Some(b'#') => (&token[..token.len() - 1], Some(Suffix::Checkmate)),

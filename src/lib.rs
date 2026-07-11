@@ -7,10 +7,12 @@ use rayon::prelude::*;
 
 mod board_serialization;
 mod comment_parsing;
+mod flat;
 mod python_bindings;
 mod tokenizer;
 mod visitor;
 
+pub use flat::{FlatOutput, parse_games_flat};
 use python_bindings::{ChunkData, ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
 pub use visitor::{Buffers, ParseConfig, parse_game_to_buffers};
 
