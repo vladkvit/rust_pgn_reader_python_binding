@@ -74,4 +74,3 @@ docs/_build/
 # Local benchmark data and derived reference dumps
 *.parquet
 *.pgn
-reference_*.json
