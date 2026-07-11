@@ -9,7 +9,12 @@ use crate::board_serialization::{
 };
 use crate::comment_parsing::{CommentContent, ParsedTag, parse_comments};
 use crate::tokenizer::{Outcome, Visitor};
-use shakmaty::{CastlingMode, Chess, Color, Position, fen::Fen, san::SanPlus, uci::UciMove};
+use shakmaty::{
+    CastlingMode, CastlingSide, Chess, Color, Position,
+    fen::Fen,
+    san::{San, SanPlus, Suffix},
+    uci::UciMove,
+};
 use std::collections::HashMap;
 
 /// Configuration for what optional data to store during parsing.
@@ -185,6 +190,25 @@ impl Buffers {
     pub fn total_legal_moves(&self) -> usize {
         self.legal_move_from_squares.len()
     }
+}
+
+/// Support castling notated with zeros ("0-0", "0-0-0"), with optional
+/// check/checkmate suffix, matching pgn-reader's explicit handling.
+fn castling_with_zeros(token: &[u8]) -> Option<SanPlus> {
+    let (body, suffix) = match token.last() {
+        Some(b'+') => (&token[..token.len() - 1], Some(Suffix::Check)),
+        Some(b'#') => (&token[..token.len() - 1], Some(Suffix::Checkmate)),
+        _ => (token, None),
+    };
+    let side = match body {
+        b"0-0" => CastlingSide::KingSide,
+        b"0-0-0" => CastlingSide::QueenSide,
+        _ => return None,
+    };
+    Some(SanPlus {
+        san: San::Castle(side),
+        suffix,
+    })
 }
 
 /// Visitor that writes directly to shared Buffers.
@@ -378,40 +402,48 @@ impl Visitor for GameVisitor<'_> {
         self.push_board_state();
     }
 
-    fn san(&mut self, san_plus: SanPlus) {
-        if self.valid_moves {
-            match san_plus.san.to_move(&self.pos) {
-                Ok(m) => {
-                    self.pos.play_unchecked(m);
+    fn san_token(&mut self, token: &[u8]) {
+        // Early abort: once the game is invalid, skip SAN parsing entirely.
+        if !self.valid_moves {
+            return;
+        }
 
-                    // Record board state after move
-                    self.push_board_state();
+        let san_plus = match castling_with_zeros(token) {
+            Some(san_plus) => san_plus,
+            None => match SanPlus::from_ascii(token) {
+                Ok(san_plus) => san_plus,
+                Err(error) => {
+                    let token_str = String::from_utf8_lossy(token);
+                    self.set_error(format!("failed to parse SAN: {} ({})", error, token_str));
+                    return;
+                }
+            },
+        };
 
-                    let uci_move_obj = UciMove::from_standard(m);
-                    match uci_move_obj {
-                        UciMove::Normal {
-                            from,
-                            to,
-                            promotion,
-                        } => {
-                            self.push_move(from as u8, to as u8, promotion.map(|p| p as u8));
-                        }
-                        _ => {
-                            self.set_error(format!("unexpected UCI move type: {:?}", uci_move_obj));
-                        }
+        match san_plus.san.to_move(&self.pos) {
+            Ok(m) => {
+                self.pos.play_unchecked(m);
+
+                // Record board state after move
+                self.push_board_state();
+
+                let uci_move_obj = UciMove::from_standard(m);
+                match uci_move_obj {
+                    UciMove::Normal {
+                        from,
+                        to,
+                        promotion,
+                    } => {
+                        self.push_move(from as u8, to as u8, promotion.map(|p| p as u8));
+                    }
+                    _ => {
+                        self.set_error(format!("unexpected UCI move type: {:?}", uci_move_obj));
                     }
                 }
-                Err(err) => {
-                    self.set_error(format!("illegal move: {} {}", err, san_plus));
-                }
             }
-        }
-    }
-
-    fn san_error(&mut self, error: shakmaty::san::ParseSanError, token: &[u8]) {
-        if self.valid_moves {
-            let token_str = String::from_utf8_lossy(token);
-            self.set_error(format!("failed to parse SAN: {} ({})", error, token_str));
+            Err(err) => {
+                self.set_error(format!("illegal move: {} {}", err, san_plus));
+            }
         }
     }
 
@@ -606,6 +638,40 @@ mod tests {
 
         let pos_offsets = buffers.compute_position_offsets();
         assert_eq!(pos_offsets, vec![0, 5, 12, 16]);
+    }
+
+    #[test]
+    fn test_castling_with_zeros_normalized() {
+        // Zeros notation is handled in the visitor (moved from the tokenizer).
+        let pgn = "1. e4 e5 2. Nf3 Nf6 3. Bc4 Bc5 4. 0-0 0-0 1-0";
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "zeros castling should parse as O-O");
+        assert_eq!(buffers.total_moves(), 8);
+        assert_eq!(buffers.parse_errors[0], None);
+    }
+
+    #[test]
+    fn test_invalid_san_token_sets_parse_error() {
+        let pgn = "1. e4 xyzzy9 e5 1-0";
+
+        let config = default_config();
+        let mut buffers = Buffers::with_capacity(1, 70, &config);
+        let result = parse_game_to_buffers(pgn, &mut buffers, &config);
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "garbage SAN token should invalidate game");
+        let err = buffers.parse_errors[0].as_deref().unwrap();
+        assert!(
+            err.starts_with("failed to parse SAN:") && err.contains("xyzzy9"),
+            "unexpected error message: {err}"
+        );
+        // Moves stop being recorded after the first error.
+        assert_eq!(buffers.total_moves(), 1);
     }
 
     #[test]

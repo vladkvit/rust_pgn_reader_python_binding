@@ -1,6 +1,4 @@
 use memchr::memchr;
-use shakmaty::CastlingSide;
-use shakmaty::san::{ParseSanError, San, SanPlus, Suffix};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -10,12 +8,20 @@ pub enum Outcome {
     Unknown,
 }
 
+/// Purely lexical PGN event consumer.
+///
+/// The tokenizer performs no chess-semantic work: SAN tokens are delivered
+/// as raw bytes via `san_token` and it is the visitor's job to parse them
+/// (e.g. with `shakmaty::san::SanPlus::from_ascii`). This keeps a pure
+/// counting pass free of SAN-parsing cost.
 pub trait Visitor {
     fn begin_headers(&mut self);
     fn header(&mut self, key: &[u8], value: &[u8]);
     fn end_headers(&mut self);
-    fn san(&mut self, san_plus: SanPlus);
-    fn san_error(&mut self, error: ParseSanError, token: &[u8]);
+    /// A mainline movetext token that is not a move number, NAG, result or
+    /// comment. Usually a SAN move, but syntactically invalid tokens are
+    /// delivered raw as well.
+    fn san_token(&mut self, token: &[u8]);
     fn comment(&mut self, comment: &[u8]);
     fn outcome(&mut self, outcome: Outcome);
     fn end_game(&mut self);
@@ -28,8 +34,9 @@ pub trait Visitor {
 /// behavior of a single `pgn_reader::Reader::read_game` call.
 ///
 /// Known intentional divergences from pgn-reader:
-/// - Syntactically invalid SAN tokens report `san_error` instead of being
-///   silently skipped.
+/// - SAN tokens are not parsed here; they are delivered raw via `san_token`
+///   (including syntactically invalid ones, which pgn-reader silently skips —
+///   the visitor decides how to handle them).
 /// - An unterminated `{` comment is delivered as a comment spanning the rest
 ///   of the input instead of raising a hard error.
 pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
@@ -223,14 +230,9 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
                     break;
                 } else if token.iter().all(|b| b.is_ascii_digit()) {
                     // Move number, skip
-                } else if let Some(san_plus) = castling_with_zeros(token) {
-                    visitor.san(san_plus);
                 } else {
-                    // It's a SAN token
-                    match SanPlus::from_ascii(token) {
-                        Ok(san_plus) => visitor.san(san_plus),
-                        Err(e) => visitor.san_error(e, token),
-                    }
+                    // SAN (or garbage) token — delivered raw, parsed by the visitor.
+                    visitor.san_token(token);
                 }
             }
         }
@@ -242,25 +244,6 @@ pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) {
         visitor.end_headers();
     }
     visitor.end_game();
-}
-
-/// Support castling notated with zeros ("0-0", "0-0-0"), with optional
-/// check/checkmate suffix, matching pgn-reader's explicit handling.
-fn castling_with_zeros(token: &[u8]) -> Option<SanPlus> {
-    let (body, suffix) = match token.last() {
-        Some(b'+') => (&token[..token.len() - 1], Some(Suffix::Check)),
-        Some(b'#') => (&token[..token.len() - 1], Some(Suffix::Checkmate)),
-        _ => (token, None),
-    };
-    let side = match body {
-        b"0-0" => CastlingSide::KingSide,
-        b"0-0-0" => CastlingSide::QueenSide,
-        _ => return None,
-    };
-    Some(SanPlus {
-        san: San::Castle(side),
-        suffix,
-    })
 }
 
 fn is_token_delimiter(c: u8) -> bool {
@@ -307,12 +290,9 @@ mod tests {
         fn end_headers(&mut self) {
             self.events.push("end_headers".to_string());
         }
-        fn san(&mut self, san_plus: SanPlus) {
-            self.events.push(format!("san {}", san_plus));
-        }
-        fn san_error(&mut self, _error: ParseSanError, token: &[u8]) {
+        fn san_token(&mut self, token: &[u8]) {
             self.events
-                .push(format!("san_error {}", String::from_utf8_lossy(token)));
+                .push(format!("san {}", String::from_utf8_lossy(token)));
         }
         fn comment(&mut self, comment: &[u8]) {
             self.events
@@ -339,17 +319,9 @@ mod tests {
             .collect()
     }
 
-    fn san_errors(pgn: &str) -> Vec<String> {
-        events(pgn)
-            .iter()
-            .filter_map(|e| e.strip_prefix("san_error ").map(str::to_owned))
-            .collect()
-    }
-
     #[test]
     fn test_move_numbers_without_space() {
         assert_eq!(sans("1.e4 e5 2.Nf3 Nc6 1-0"), ["e4", "e5", "Nf3", "Nc6"]);
-        assert!(san_errors("1.e4 e5 2.Nf3 Nc6 1-0").is_empty());
     }
 
     #[test]
@@ -364,7 +336,6 @@ mod tests {
     fn test_attached_annotations() {
         let pgn = "1. e4!? e5?! 2. Nf3! Nc6?? 3. Bb5$14 a6 *";
         assert_eq!(sans(pgn), ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]);
-        assert!(san_errors(pgn).is_empty());
     }
 
     #[test]
@@ -376,10 +347,11 @@ mod tests {
     }
 
     #[test]
-    fn test_castling_with_zeros() {
+    fn test_castling_with_zeros_delivered_raw() {
+        // Zeros-castling normalization is semantic and lives in the visitor
+        // (see visitor.rs); the tokenizer delivers the tokens verbatim.
         let pgn = "1. 0-0 0-0-0 2. 0-0+ 0-0-0# 1-0";
-        assert_eq!(sans(pgn), ["O-O", "O-O-O", "O-O+", "O-O-O#"]);
-        assert!(san_errors(pgn).is_empty());
+        assert_eq!(sans(pgn), ["0-0", "0-0-0", "0-0+", "0-0-0#"]);
     }
 
     #[test]
@@ -434,12 +406,11 @@ mod tests {
 
     #[test]
     fn test_percent_mid_line_is_not_escape() {
-        // '%' not at line start is not an escape; the junk token errors
-        // (intentionally stricter than pgn-reader's silent skip) and
-        // parsing continues to the end of the game.
+        // '%' not at line start is not an escape; the junk token is delivered
+        // raw like any other token (the visitor decides how to handle it) and
+        // tokenizing continues to the end of the game.
         let pgn = "1. e4 %junk e5 *";
-        assert_eq!(sans(pgn), ["e4", "e5"]);
-        assert_eq!(san_errors(pgn), ["%junk"]);
+        assert_eq!(sans(pgn), ["e4", "%junk", "e5"]);
     }
 
     #[test]
@@ -508,10 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn test_garbage_token_reports_san_error() {
+    fn test_garbage_token_delivered_raw() {
         let pgn = "1. e4 xyzzy9 e5 *";
-        assert_eq!(san_errors(pgn), ["xyzzy9"]);
-        assert_eq!(sans(pgn), ["e4", "e5"]);
+        assert_eq!(sans(pgn), ["e4", "xyzzy9", "e5"]);
     }
 
     #[test]
