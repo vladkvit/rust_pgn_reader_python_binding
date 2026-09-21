@@ -18,6 +18,9 @@ num_cpus = "1.17"
 arrow-array = "59"
 pyo3-arrow = "0.19"
 numpy = "0.29"
+# Direct parquet reading for parse_games_from_parquet. Only the SNAPPY codec
+# (used by the Lichess/HF corpora) is enabled to keep the extension lean.
+parquet = { version = "59", default-features = false, features = ["arrow", "snap"] }
 
 [features]
 # Embeds PyO3 introspection metadata so `maturin generate-stubs` can emit
@@ -26,9 +29,9 @@ stubgen = ["pyo3/experimental-inspect"]
 
 [dev-dependencies]
 criterion = "0.8"
-# reading the parquet corpus (benches/parquet_bench.rs)
+# reading the parquet corpus (benches/parquet_bench.rs); the parquet crate
+# itself comes from [dependencies]
 arrow = "59"
-parquet = "59"
 
 [[bench]]
 harness = false

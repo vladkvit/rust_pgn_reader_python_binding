@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 import numpy as np
 
@@ -943,6 +945,72 @@ class TestParsedGames(unittest.TestCase):
         # PyChunkView repr
         chunk_repr = repr(result.chunks[0])
         self.assertIn("PyChunkView", chunk_repr)
+
+
+class TestParseGamesFromParquet(unittest.TestCase):
+    PGNs = [
+        "[Event \"A\"]\n[White \"x\"]\n[Black \"y\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0",
+        "1. d4 d5 2. c4 e6 0-1",
+        "[FEN \"invalid fen string\"]\n\n1. e4 e5 1-0",
+        "1. f3 e5 2. g4 Qh4# 0-1",
+    ]
+
+    def _write_parquet(self, directory, column="movetext", compression="snappy"):
+        import pyarrow.parquet as pq
+
+        path = os.path.join(directory, "games.parquet")
+        table = pa.table({
+            column: pa.array(self.PGNs),
+            "unused": pa.array(list(range(len(self.PGNs))), type=pa.int16()),
+        })
+        pq.write_table(table, path, compression=compression)
+        return path
+
+    def _compare(self, from_file, from_array):
+        self.assertEqual(from_file.num_games, from_array.num_games)
+        self.assertEqual(from_file.num_moves, from_array.num_moves)
+        self.assertEqual(from_file.num_positions, from_array.num_positions)
+        for i in range(from_array.num_games):
+            self.assertEqual(
+                from_file[i].moves_uci(), from_array[i].moves_uci(), f"game {i}"
+            )
+            self.assertEqual(from_file[i].outcome, from_array[i].outcome)
+            self.assertEqual(from_file[i].is_valid, from_array[i].is_valid)
+
+    def test_matches_arrow_entry_point(self):
+        """Parquet path produces the same games as the Arrow path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_parquet(tmp)
+            expected = rust_pgn_reader_python_binding.parse_games_from_strings(
+                self.PGNs, num_threads=1
+            )
+            result = rust_pgn_reader_python_binding.parse_games_from_parquet(
+                path, num_threads=1
+            )
+            self._compare(result, expected)
+
+    def test_custom_column_name(self):
+        """A non-default string column can be selected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_parquet(tmp, column="pgn")
+            result = rust_pgn_reader_python_binding.parse_games_from_parquet(
+                path, column="pgn", num_threads=1
+            )
+            self.assertEqual(result.num_games, len(self.PGNs))
+
+    def test_missing_file_raises(self):
+        with self.assertRaises(ValueError):
+            rust_pgn_reader_python_binding.parse_games_from_parquet(
+                "does-not-exist.parquet"
+            )
+
+    def test_missing_column_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_parquet(tmp)
+            with self.assertRaises(ValueError):
+                rust_pgn_reader_python_binding.parse_games_from_parquet(
+                    path, column="not_a_column"
+                )
 
 
 if __name__ == "__main__":

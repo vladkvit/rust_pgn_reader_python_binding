@@ -7,6 +7,7 @@ use rayon::prelude::*;
 
 mod board_serialization;
 mod comment_parsing;
+mod parquet_source;
 mod python_bindings;
 mod san_resolver;
 mod tokenizer;
@@ -343,6 +344,55 @@ fn parse_games_from_strings(
     parse_str_slices(py, &str_slices, num_threads, 1, &config)
 }
 
+/// Parse games from a parquet file on disk.
+///
+/// The file is opened and decoded in Rust (projecting only the requested
+/// column) and then fed through the same multithreaded pipeline as
+/// `parse_games`, so the corpus never has to be materialized as an Arrow
+/// array in Python.
+#[pyfunction]
+#[pyo3(signature = (path, column="movetext", num_threads=None, chunk_multiplier=None, store_comments=false, store_legal_moves=false))]
+fn parse_games_from_parquet(
+    py: Python<'_>,
+    path: &str,
+    column: &str,
+    num_threads: Option<usize>,
+    chunk_multiplier: Option<usize>,
+    store_comments: bool,
+    store_legal_moves: bool,
+) -> PyResult<ParsedGames> {
+    let config = ParseConfig {
+        store_comments,
+        store_legal_moves,
+    };
+    let num_threads = num_threads.unwrap_or_else(num_cpus::get);
+    let chunk_multiplier = chunk_multiplier.unwrap_or(1);
+    let num_chunks = num_threads * chunk_multiplier;
+
+    // Decode + parse with the GIL released.
+    let chunk_results = py
+        .detach(|| {
+            parquet_source::parse_parquet_parallel(
+                std::path::Path::new(path),
+                column,
+                num_threads,
+                num_chunks,
+                &config,
+            )
+        })
+        .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+
+    if chunk_results.is_empty() {
+        let empty_chunk = buffers_to_chunk_data(py, Buffers::default())?;
+        return build_parsed_games(py, vec![empty_chunk]);
+    }
+    let chunk_data_vec = chunk_results
+        .into_iter()
+        .map(|buf| buffers_to_chunk_data(py, buf))
+        .collect::<PyResult<Vec<_>>>()?;
+    build_parsed_games(py, chunk_data_vec)
+}
+
 /// Parser for chess PGN notation.
 ///
 /// Declared as an inline module (rather than an `fn`) so that PyO3's
@@ -351,7 +401,7 @@ fn parse_games_from_strings(
 #[pymodule(gil_used = true)]
 mod rust_pgn_reader_python_binding {
     #[pymodule_export]
-    use super::{parse_game, parse_games, parse_games_from_strings};
+    use super::{parse_game, parse_games, parse_games_from_parquet, parse_games_from_strings};
     #[pymodule_export]
     use super::python_bindings::{ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
 }

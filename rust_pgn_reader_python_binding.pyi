@@ -371,6 +371,34 @@ def parse_games(
     """
     ...
 
+def parse_games_from_parquet(
+    path: str,
+    column: str = "movetext",
+    num_threads: Optional[int] = None,
+    chunk_multiplier: Optional[int] = None,
+    store_comments: bool = False,
+    store_legal_moves: bool = False,
+) -> ParsedGames:
+    """Parse chess games directly from a parquet file on disk.
+
+    The file is opened and decoded in Rust (projecting only ``column``) and
+    parsed with the same multithreaded pipeline as ``parse_games``, so the
+    corpus never has to be materialized as a Python-side Arrow array.
+
+    Args:
+        path: Path to the parquet file.
+        column: Name of the string column holding the PGN movetext
+            (default: "movetext").
+        num_threads: Number of threads for parallel parsing (default: all CPUs)
+        chunk_multiplier: Multiplier for number of chunks (default: 1)
+        store_comments: Whether to store raw text comments (default: False)
+        store_legal_moves: Whether to store legal moves at each position (default: False)
+
+    Returns:
+        ParsedGames object containing flat arrays and iteration support
+    """
+    ...
+
 def parse_games_from_strings(
     pgns: List[str],
     num_threads: Optional[int] = None,

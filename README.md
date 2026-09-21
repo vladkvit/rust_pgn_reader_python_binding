@@ -7,11 +7,14 @@ This project adds Python bindings to [rust-pgn-reader](https://github.com/niklas
 
 ## API
 
-Three entry points are available:
+Four entry points are available:
 
 - `parse_game(pgn)` - Parse a single PGN string
 - `parse_games(chunked_array)` - Parse games from a PyArrow ChunkedArray (multithreaded)
 - `parse_games_from_strings(pgns)` - Parse a list of PGN strings (multithreaded)
+- `parse_games_from_parquet(path, column="movetext")` - Read a parquet file
+  directly in Rust and parse it (multithreaded, decodes and parses in the same
+  worker pool)
 
 All return a `ParsedGames` container with flat NumPy arrays, supporting:
 - Indexing (`result[i]`), slicing (`result[1:3]`), and iteration (`for game in result`)
@@ -26,6 +29,7 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459 games) on a 
 | Parser                                                                     | File format | Time   |
 |----------------------------------------------------------------------------|-------------|--------|
 | **rust_pgn_reader_python_binding, parse_games (multithreaded)**            | parquet     | 0.14s  |
+| rust_pgn_reader_python_binding, parse_games_from_parquet (multithreaded, read+parse) | parquet | 0.21s |
 | rust_pgn_reader_python_binding, parse_games (singlethreaded)               | parquet     | 1.3s   |
 | rust_pgn_reader_python_binding, parse_games_from_strings (multithreaded)   | PGN         | 0.41s  |
 | [chess-library](https://github.com/Disservin/chess-library)                | PGN         | 2s     |
@@ -35,6 +39,9 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459 games) on a 
 To replicate, download `2013-07-train-00000-of-00001.parquet` and then run:
 
 `python src/bench_parse_games.py` (recommended — multithreaded parse_games via Arrow)
+
+`python src/bench_parse_games_file.py` (Rust reads the parquet file itself; the
+0.21s row includes both parquet decode and parsing)
 
 `python src/bench_parse_games_singlethreaded.py` (singlethreaded parse_games via Arrow)
 
