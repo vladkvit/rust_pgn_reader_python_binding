@@ -1,5 +1,5 @@
 import rust_pgn_reader_python_binding
-from datetime import datetime
+from time import perf_counter
 
 
 def split_pgn(file_path):
@@ -34,17 +34,17 @@ def split_pgn(file_path):
 
 file_path = "lichess_db_standard_rated_2013-07.pgn"
 
-start = datetime.now()
+start = perf_counter()
 
-a = datetime.now()
+a = perf_counter()
 games = split_pgn(file_path)
-b = datetime.now()
-print(f"File read & split: {b - a} ({len(games)} games)")
+b = perf_counter()
+print(f"File read & split: {b - a:.4f} ({len(games)} games)")
 
-a = datetime.now()
+a = perf_counter()
 result = rust_pgn_reader_python_binding.parse_games_from_strings(games)
-b = datetime.now()
-print(f"Parse:             {b - a}")
+b = perf_counter()
+print(f"Parse:             {b - a:.4f}")
 
-end = datetime.now()
-print(f"Total:             {end - start}")
+end = perf_counter()
+print(f"Total:             {end - start:.4f}")
