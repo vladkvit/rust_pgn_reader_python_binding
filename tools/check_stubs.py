@@ -21,8 +21,8 @@ Usage:
     python tools/check_stubs.py                      # generate + compare
     python tools/check_stubs.py --generated PATH     # compare a prebuilt stub
 
-Requires maturin on PATH (or pass --maturin) and a Rust toolchain when
-generating. Exits 0 when in sync, 1 on drift.
+Requires maturin >= 1.15 on PATH (or pass --maturin) and a Rust toolchain
+when generating. Exits 0 when in sync, 1 on drift.
 """
 from __future__ import annotations
 
@@ -82,7 +82,8 @@ def generate_stub(maturin: str, outdir: Path) -> Path:
     ]
     print("+ " + " ".join(cmd), file=sys.stderr)
     subprocess.run(cmd, cwd=ROOT, check=True)
-    return outdir / "rust_pgn_reader_python_binding.pyi"
+    # maturin >= 1.15 writes stubs in package layout: <out>/<module>/__init__.pyi
+    return outdir / "rust_pgn_reader_python_binding" / "__init__.pyi"
 
 
 def main() -> int:

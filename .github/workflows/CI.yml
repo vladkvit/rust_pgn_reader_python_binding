@@ -159,7 +159,8 @@ jobs:
           command: generate-stubs
           args: --out stubs --features stubgen --find-interpreter
       - name: Check for stub drift
-        run: python tools/check_stubs.py --generated stubs/rust_pgn_reader_python_binding.pyi
+        # maturin >= 1.15 writes stubs in package layout: <out>/<module>/__init__.pyi
+        run: python tools/check_stubs.py --generated stubs/rust_pgn_reader_python_binding/__init__.pyi
 
   sdist:
     runs-on: ubuntu-latest
