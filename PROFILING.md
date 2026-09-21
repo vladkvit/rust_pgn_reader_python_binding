@@ -10,3 +10,4 @@
 - Release builds without debug info lose ~1/3 of pyd symbols,.
 - profile_collapsed lines can be ~20 KB (rayon monomorphized names, capped at 100 chars/frame).
 - Machine: 7800X3D, 8 physical / 16 logical cores → 16 rayon workers.
+-Don't run the samply record line inside a harness (e.g. opencode). The command stays running, and the harness waits for it to close - ends up timing out. 
