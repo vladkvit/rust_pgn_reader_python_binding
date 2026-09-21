@@ -72,3 +72,13 @@ This regenerates the stub via `maturin generate-stubs` (PyO3
 symbol surface (module functions, classes, methods/properties, but not
 annotations) against the hand-written file. CI runs the same check in the
 `stubs` job.
+
+
+## Further performance squeezing:
+- Interleaved parquet read + parse
+- Opening cache. For positions that occur plenty of times, a `(zobrist(pos), san_token)` → `Move`
+  cache could skip `san_resolver` + legality on cache hits.
+- crude move-count estimator from movetext byte length for buffer preallocation (bytes-per-ply ≈ 6-6.5, over-estimate
+  is relatively cheap, under-estimate forces realloc copies). We currently assume 70 moves per game. Since we have long chunks (not per-game),
+  long game moves eat up the slack from short games. Wont' help on Lichess games (we're already doing quite well). But if going with a 
+  different / unknown corpus, 70 will be off (different game lengths, comments). But comments will also throw off our byte-based move count estimator.

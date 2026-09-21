@@ -67,6 +67,10 @@ fn leave_headers<V: Visitor>(in_headers: &mut bool, visitor: &mut V) {
 /// call). Trailing content after the terminator is not consumed; the
 /// returned [`GameEnd`] tells the caller how far the game reached and
 /// whether an explicit terminator was seen.
+// TODO(perf): this byte-at-a-time classification loop is ~7% of worker
+// self time (samply, 2026-09, 2eddc35). Candidate for SIMD/SWAR skipping over
+// delim-class bytes (memchr3-style or a 256-entry byte-class table with
+// chunked scanning). Modest expected win; measure before/after.
 pub fn parse_game<V: Visitor>(mut bytes: &[u8], visitor: &mut V) -> GameEnd {
     // Strip UTF-8 BOM
     if bytes.starts_with(b"\xEF\xBB\xBF") {
