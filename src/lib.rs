@@ -14,7 +14,7 @@ mod visitor;
 
 pub mod splitter;
 
-use python_bindings::{ChunkData, ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
+use python_bindings::{ChunkData, ParsedGames};
 pub use visitor::{Buffers, ParseConfig, parse_batch, parse_game_to_buffers};
 
 /// Shared parallel parsing logic for a slice of PGN strings.
@@ -343,15 +343,15 @@ fn parse_games_from_strings(
     parse_str_slices(py, &str_slices, num_threads, 1, &config)
 }
 
-/// Parser for chess PGN notation
+/// Parser for chess PGN notation.
+///
+/// Declared as an inline module (rather than an `fn`) so that PyO3's
+/// introspection (`experimental-inspect`) can see the exported items and
+/// `maturin generate-stubs` can emit complete .pyi stubs.
 #[pymodule(gil_used = true)]
-fn rust_pgn_reader_python_binding(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(parse_game, m)?)?;
-    m.add_function(wrap_pyfunction!(parse_games, m)?)?;
-    m.add_function(wrap_pyfunction!(parse_games_from_strings, m)?)?;
-    m.add_class::<ParsedGames>()?;
-    m.add_class::<PyGameView>()?;
-    m.add_class::<PyChunkView>()?;
-    m.add_class::<ParsedGamesIter>()?;
-    Ok(())
+mod rust_pgn_reader_python_binding {
+    #[pymodule_export]
+    use super::{parse_game, parse_games, parse_games_from_strings};
+    #[pymodule_export]
+    use super::python_bindings::{ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
 }
