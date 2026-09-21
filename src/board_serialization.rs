@@ -7,7 +7,13 @@
 //! Note: This differs from some Python code that uses [7 - rank, file] indexing.
 //! The Python wrapper can transpose if needed.
 
-use shakmaty::{Chess, Color, EnPassantMode, Position, Role, Square};
+use shakmaty::{CastlingSide, Chess, Color, EnPassantMode, Move, Position, Role, Square};
+
+/// Byte value of a piece in the serialized board encoding
+/// (1-6 white PNBRQK, 7-12 black pnbrqk; Role enum values are 1-6).
+fn piece_byte(role: Role, color: Color) -> u8 {
+    role as u8 + if color == Color::White { 0 } else { 6 }
+}
 
 /// Serialize board position to 64-byte array.
 /// Index mapping: square index (a1=0, h8=63) -> piece value (0-12)
@@ -19,16 +25,55 @@ pub fn serialize_board(pos: &Chess) -> [u8; 64] {
     let b = pos.board();
 
     for role in Role::ALL {
-        let piece_val = role as u8; // Role enum is 1-6
         for sq in b.by_role(role) & b.white() {
-            board[sq as usize] = piece_val;
+            board[sq as usize] = piece_byte(role, Color::White);
         }
         for sq in b.by_role(role) & b.black() {
-            board[sq as usize] = piece_val + 6;
+            board[sq as usize] = piece_byte(role, Color::Black);
         }
     }
 
     board
+}
+
+/// Apply the board delta of `m` (played by `color`) to a serialized board.
+///
+/// Mirrors shakmaty's `do_move`: captures are implicit overwrites (including
+/// promotion captures); castling clears both origin squares before setting
+/// the destinations, which keeps the degenerate Chess960 cases correct —
+/// a from-square can coincide with a to-square (e.g. Kg1+Rf1 O-O leaves the
+/// king in place, Kf1+Rh1 O-O lands the rook on the king's origin).
+pub fn apply_move(board: &mut [u8; 64], m: Move, color: Color) {
+    match m {
+        Move::Normal {
+            role,
+            from,
+            to,
+            promotion,
+            ..
+        } => {
+            board[from as usize] = 0;
+            board[to as usize] = piece_byte(promotion.unwrap_or(role), color);
+        }
+        Move::EnPassant { from, to } => {
+            board[Square::from_coords(to.file(), from.rank()) as usize] = 0;
+            board[from as usize] = 0;
+            board[to as usize] = piece_byte(Role::Pawn, color);
+        }
+        Move::Castle { king, rook } => {
+            let side = CastlingSide::from_queen_side(rook < king);
+            board[king as usize] = 0;
+            board[rook as usize] = 0;
+            board[Square::from_coords(side.rook_to_file(), rook.rank()) as usize] =
+                piece_byte(Role::Rook, color);
+            board[Square::from_coords(side.king_to_file(), king.rank()) as usize] =
+                piece_byte(Role::King, color);
+        }
+        // `San::to_move` can never return a drop move for standard Chess
+        // (`San::Put` finds zero candidates, `San::Null` errors
+        // unconditionally), so the parser never produces these.
+        Move::Put { .. } => unreachable!("drop moves do not occur in Chess"),
+    }
 }
 
 /// Get en passant file (0-7) or -1 if none.
@@ -64,6 +109,41 @@ pub fn get_castling_rights(pos: &Chess) -> [bool; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shakmaty::{CastlingMode, fen::Fen, san::SanPlus};
+
+    fn pos(fen: &str, mode: CastlingMode) -> Chess {
+        fen.parse::<Fen>()
+            .expect("valid FEN")
+            .into_position(mode)
+            .expect("legal position")
+    }
+
+    /// Differential: `apply_move` on the serialized board must match
+    /// `serialize_board` of the played-out position.
+    fn check_delta(p: &Chess, m: Move) {
+        let mut board = serialize_board(p);
+        apply_move(&mut board, m, p.turn());
+        let mut after = p.clone();
+        after.play_unchecked(m);
+        assert_eq!(board, serialize_board(&after), "delta mismatch for {m:?}");
+    }
+
+    fn check_san(fen: &str, san: &str) {
+        let p = pos(fen, CastlingMode::Standard);
+        let m = SanPlus::from_ascii(san.as_bytes())
+            .expect("valid SAN")
+            .san
+            .to_move(&p)
+            .expect("legal move");
+        check_delta(&p, m);
+    }
+
+    /// Chess960 castle applied from a directly constructed move (castle
+    /// rights are irrelevant: `play_unchecked` does not verify them).
+    fn check_960_castle(fen: &str, king: Square, rook: Square) {
+        let p = pos(fen, CastlingMode::Chess960);
+        check_delta(&p, Move::Castle { king, rook });
+    }
 
     #[test]
     fn test_serialize_initial_board() {
@@ -129,5 +209,81 @@ mod tests {
     fn test_initial_turn() {
         let pos = Chess::default();
         assert!(get_turn(&pos)); // White to move
+    }
+
+    #[test]
+    fn test_apply_quiet_and_double_push() {
+        check_san(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "Nf3",
+        );
+        check_san(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "e4",
+        );
+    }
+
+    #[test]
+    fn test_apply_capture() {
+        check_san(
+            "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+            "exd5",
+        );
+    }
+
+    #[test]
+    fn test_apply_promotion() {
+        let fen = "3r1r2/4P3/8/8/8/8/8/k3K3 w - - 0 1";
+        check_san(fen, "e8=Q"); // quiet
+        check_san(fen, "exd8=Q"); // capture
+    }
+
+    #[test]
+    fn test_apply_en_passant() {
+        // White: the e.p.-captured pawn sits beside the mover, not on `to`.
+        check_san(
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "exf6",
+        );
+        // Black (opposite color offset in the encoding).
+        check_san(
+            "rnbqkbnr/pppp1ppp/8/8/4Pp2/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 2",
+            "fxe3",
+        );
+    }
+
+    #[test]
+    fn test_apply_castle_standard() {
+        check_san("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "O-O");
+        check_san("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "O-O-O");
+        check_san("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1", "O-O");
+        check_san("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1", "O-O-O");
+    }
+
+    #[test]
+    fn test_apply_castle_960_king_stationary() {
+        // Kg1 + Rh1, O-O: king_to == king's origin.
+        check_960_castle("4k3/8/8/8/8/8/8/6KR w - - 0 1", Square::G1, Square::H1);
+    }
+
+    #[test]
+    fn test_apply_castle_960_rook_lands_on_king_origin() {
+        // Kf1 + Rh1, O-O: rook_to (f1) == king's origin.
+        check_960_castle("4k3/8/8/8/8/8/8/5K1R w - - 0 1", Square::F1, Square::H1);
+    }
+
+    #[test]
+    fn test_apply_castle_960_swap() {
+        // Kf1 + Rg1, O-O: king and rook swap squares (each destination is
+        // the other's origin).
+        check_960_castle("4k3/8/8/8/8/8/8/5KR1 w - - 0 1", Square::F1, Square::G1);
+        // Same pattern for black: exercises the +6 color offset in castles.
+        check_960_castle("5kr1/8/8/8/8/8/8/4K3 b - - 0 1", Square::F8, Square::G8);
+    }
+
+    #[test]
+    fn test_apply_castle_960_queenside() {
+        // Kb1 + Ra1, O-O-O: both pieces move, rook crosses over the king.
+        check_960_castle("4k3/8/8/8/8/8/8/RK6 w - - 0 1", Square::B1, Square::A1);
     }
 }

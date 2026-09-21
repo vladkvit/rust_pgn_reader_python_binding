@@ -8,10 +8,14 @@ use rayon::prelude::*;
 mod board_serialization;
 mod comment_parsing;
 mod python_bindings;
+mod san_resolver;
+mod tokenizer;
 mod visitor;
 
+pub mod splitter;
+
 use python_bindings::{ChunkData, ParsedGames, ParsedGamesIter, PyChunkView, PyGameView};
-pub use visitor::{Buffers, ParseConfig, parse_game_to_buffers};
+pub use visitor::{Buffers, ParseConfig, parse_batch, parse_game_to_buffers};
 
 /// Shared parallel parsing logic for a slice of PGN strings.
 ///
@@ -45,17 +49,21 @@ fn parse_str_slices(
     let chunk_size = ((n_games + num_chunks - 1) / num_chunks).max(1);
     let moves_per_game = 70;
 
-    let chunk_results: Vec<Buffers> = thread_pool.install(|| {
-        slices
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut buffers = Buffers::with_capacity(chunk_size, moves_per_game, config);
-                for &pgn in chunk {
-                    let _ = parse_game_to_buffers(pgn, &mut buffers, config);
-                }
-                buffers
-            })
-            .collect()
+    // Release the GIL for the duration of parsing; buffers_to_chunk_data
+    // re-enters Python afterwards.
+    let chunk_results: Vec<Buffers> = py.detach(|| {
+        thread_pool.install(|| {
+            slices
+                .par_chunks(chunk_size)
+                .map(|chunk| {
+                    let mut buffers = Buffers::with_capacity(chunk_size, moves_per_game, config);
+                    for &pgn in chunk {
+                        let _ = parse_game_to_buffers(pgn, &mut buffers, config);
+                    }
+                    buffers
+                })
+                .collect()
+        })
     });
 
     let chunk_data_vec: Vec<ChunkData> = chunk_results
