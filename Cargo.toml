@@ -18,15 +18,21 @@ num_cpus = "1.17"
 arrow-array = "59"
 pyo3-arrow = "0.19"
 numpy = "0.29"
-parquet = "59"
-arrow = "59"
 
 [dev-dependencies]
 criterion = "0.8"
+# reading the parquet corpus (benches/parquet_bench.rs)
+arrow = "59"
+parquet = "59"
 
 [[bench]]
 harness = false
 name = "parquet_bench"
 
 [profile.bench]
+debug = true
+
+# Usage: maturin develop --profile profiling
+[profile.profiling]
+inherits = "release"
 debug = true
