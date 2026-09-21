@@ -25,9 +25,9 @@ Below are some benchmarks on Lichess's 2013-07 chess games (293,459 games) on a 
 
 | Parser                                                                     | File format | Time   |
 |----------------------------------------------------------------------------|-------------|--------|
-| **rust_pgn_reader_python_binding, parse_games (multithreaded)**            | parquet     | 0.27s  |
-| rust_pgn_reader_python_binding, parse_games (singlethreaded)               | parquet     | 2.9s   |
-| rust_pgn_reader_python_binding, parse_games_from_strings (multithreaded)   | PGN         | 0.56s  |
+| **rust_pgn_reader_python_binding, parse_games (multithreaded)**            | parquet     | 0.14s  |
+| rust_pgn_reader_python_binding, parse_games (singlethreaded)               | parquet     | 1.3s   |
+| rust_pgn_reader_python_binding, parse_games_from_strings (multithreaded)   | PGN         | 0.41s  |
 | [chess-library](https://github.com/Disservin/chess-library)                | PGN         | 2s     |
 | [rust-pgn-reader](https://github.com/niklasf/rust-pgn-reader/tree/master)  | PGN         | 1s     |
 | [python-chess](https://github.com/niklasf/python-chess)                    | PGN         | 3+ min |
