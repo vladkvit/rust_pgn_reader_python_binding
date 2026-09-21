@@ -70,3 +70,12 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# Local benchmark data and derived reference dumps
+*.parquet
+*.pgn
+
+# Profiling artifacts (samply profile + tools/profile_digest.py output)
+/profile.json
+/profile.json.gz
+/profile_out/
