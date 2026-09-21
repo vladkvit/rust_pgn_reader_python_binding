@@ -9,6 +9,16 @@ symbol cache) goes into the --outdir directory (default: profile_out/);
 delete that folder to clean up. Resolved symbols are cached in
 profile_symbols.json so re-runs are instant and need no server.
 
+Breakpad leaves ~1/3 of the Rust pyd's addresses "unknown" even for
+full-debug builds (its PDB dump misses function records that the PDB
+itself has). enrich_crate_symbols() patches these on Windows via
+dbghelp: SymFromAddr displacements cluster unresolved addresses by
+function start, and clusters are named after breakpad-resolved anchors
+sharing the same start. Clusters without any anchor keep a
+"<rust gap fn 0x...>" label. Resolution uses the pyd currently at the
+profiled module path, so re-record the profile after a rebuild to keep
+addresses consistent.
+
 Thread groups: "main" = python.exe threads (boots Python, prints
 results), "arrow-loader" = the thread that loads the data (default tid
 41720), "idle-tpp" = Windows thread-pool threads that are >80% idle
@@ -31,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ctypes
 import json
 import os
 import sys
@@ -129,6 +140,119 @@ def symbolicate(base, libs, needed, cache):
                 sys.exit(2)
             for a, s in zip(part, stacks):
                 entry[str(a)] = s[0].get("function") if s else None
+
+
+# ---------------------------------------------------- dbghelp enrichment --
+
+def dbghelp_starts(module_path, rvas):
+    """rva -> function start via SymFromAddr displacements, or None on
+    failure. Windows only; {} elsewhere or if loading fails.
+
+    Only displacements are used, never names (their buffer layout varies
+    by dbghelp version) — names come from resolved anchors sharing the
+    function start. disp >= MAX_DISP means "no covering symbol"."""
+    if sys.platform != "win32" or not os.path.isfile(module_path):
+        return {}
+    MAX_DISP = 0x200000
+    BASE = 0x180000000
+    try:
+        from ctypes import wintypes
+        dbg = ctypes.WinDLL("dbghelp.dll")
+        k32 = ctypes.WinDLL("kernel32.dll")
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        hp = k32.GetCurrentProcess()
+        dbg.SymSetOptions.argtypes = [wintypes.DWORD]
+        dbg.SymInitializeW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR,
+                                       wintypes.BOOL]
+        dbg.SymInitializeW.restype = wintypes.BOOL
+        dbg.SymLoadModuleExW.argtypes = [
+            wintypes.HANDLE, wintypes.HANDLE, wintypes.LPCWSTR,
+            wintypes.LPCWSTR, ctypes.c_ulonglong, wintypes.DWORD,
+            wintypes.LPVOID, wintypes.DWORD]
+        dbg.SymLoadModuleExW.restype = ctypes.c_ulonglong
+        dbg.SymFromAddr.argtypes = [
+            wintypes.HANDLE, ctypes.c_ulonglong,
+            ctypes.POINTER(ctypes.c_ulonglong), wintypes.LPVOID]
+        dbg.SymFromAddr.restype = wintypes.BOOL
+        dbg.SymUnloadModule64.argtypes = [wintypes.HANDLE, ctypes.c_ulonglong]
+        dbg.SymCleanup.argtypes = [wintypes.HANDLE]
+    except (OSError, AttributeError):
+        return {}
+    dbg.SymSetOptions(0x2 | 0x20)   # UNDNAME | AUTO_PUBLICS
+    if not dbg.SymInitializeW(hp, os.path.dirname(module_path), False):
+        return {}
+    if not dbg.SymLoadModuleExW(hp, None, module_path, None, BASE, 0, None, 0):
+        dbg.SymCleanup(hp)
+        return {}
+    buf = ctypes.create_string_buffer(4096)
+    ctypes.c_uint32.from_buffer(buf, 0).value = 88      # SizeOfStruct
+    ctypes.c_uint32.from_buffer(buf, 76).value = 2000   # MaxNameLen
+    out = {}
+    for rva in rvas:
+        disp = ctypes.c_ulonglong(0)
+        if dbg.SymFromAddr(hp, BASE + rva, ctypes.byref(disp), buf) \
+                and disp.value < MAX_DISP:
+            out[rva] = rva - disp.value
+    dbg.SymUnloadModule64(hp, BASE)
+    dbg.SymCleanup(hp)
+    return out
+
+
+def enrich_crate_symbols(libs, needed, cache):
+    """Name crate-module addresses the breakpad server answered "unknown".
+
+    Clusters unresolved addresses by function start (dbghelp displacement)
+    and names each cluster after a server-resolved anchor with the same
+    start. Clusters with no anchor become "<rust gap fn 0x<start>...>".
+    Writes results into `cache`; returns the number named. No-op off
+    Windows, without a local module, or when there is nothing to do."""
+    crate = [li for li, lib in enumerate(libs)
+             if lib["name"].startswith(RUST_CRATE)]
+    if not crate:
+        return 0
+    li = crate[0]
+    lib = libs[li]
+    if lib["breakpadId"] == ZERO_ID:
+        return 0
+    path = lib.get("path") or ""
+    key = "%s/%s" % (lib["debugName"], lib["breakpadId"])
+    entry = cache.setdefault(key, {})
+    anchors = {}   # rva -> name (server-resolved)
+    todo = []      # rvas the server could not name
+    for a in needed.get(li, ()):
+        fn = entry.get(str(a))
+        if fn and fn != "unknown":
+            anchors[a] = fn
+        else:
+            todo.append(a)
+    if not todo or not anchors:
+        return 0
+    starts = dbghelp_starts(path, list(anchors) + todo)
+    if not starts:
+        eprint("dbghelp: no displacements (module unreachable? off Windows?)")
+        return 0
+    named_starts = {}
+    for a, fn in anchors.items():
+        st = starts.get(a)
+        if st is not None and st not in named_starts:
+            named_starts[st] = fn
+    count = 0
+    gap = collections.Counter()
+    for a in todo:
+        st = starts.get(a)
+        if st is None:
+            continue
+        if st in named_starts:
+            entry[str(a)] = named_starts[st]
+        else:
+            gap[st] += 1
+            entry[str(a)] = "<rust gap fn 0x%x>" % st
+        count += 1
+    if count:
+        eprint("dbghelp: named %d server-unresolved %s addresses "
+               "(%d gap functions with no resolved anchor)"
+               % (count, lib["debugName"], len(gap)))
+    return count
 
 
 # ----------------------------------------------------------------- labels --
@@ -232,6 +356,7 @@ def main():
                 needed[li].add(a)
 
     symbolicate(args.symbol_base, libs, needed, cache)
+    enrich_crate_symbols(libs, needed, cache)
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(cache, f)
 
