@@ -143,6 +143,25 @@ jobs:
           name: wheels-macos-${{ matrix.platform.target }}
           path: dist
 
+  # Custom job (not from `maturin generate-ci`): keeps the hand-maintained
+  # .pyi stub in sync with the Rust bindings by comparing its symbol surface
+  # against PyO3's auto-generated stub.
+  stubs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
+      - name: Generate stubs
+        uses: PyO3/maturin-action@v1
+        with:
+          command: generate-stubs
+          args: --out stubs --features stubgen --find-interpreter
+      - name: Check for stub drift
+        # maturin >= 1.15 writes stubs in package layout: <out>/<module>/__init__.pyi
+        run: python tools/check_stubs.py --generated stubs/rust_pgn_reader_python_binding/__init__.pyi
+
   sdist:
     runs-on: ubuntu-latest
     steps:

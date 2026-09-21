@@ -297,6 +297,8 @@ class ParsedGames:
         """Iterate over all games."""
         ...
 
+    def __repr__(self) -> str: ...
+
     # === Mapping utilities ===
 
     def position_to_game(self, position_indices: npt.ArrayLike) -> NDArray[np.int64]:

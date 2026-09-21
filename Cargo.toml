@@ -19,6 +19,11 @@ arrow-array = "59"
 pyo3-arrow = "0.19"
 numpy = "0.29"
 
+[features]
+# Embeds PyO3 introspection metadata so `maturin generate-stubs` can emit
+# .pyi files. Off by default to keep release wheels free of the metadata.
+stubgen = ["pyo3/experimental-inspect"]
+
 [dev-dependencies]
 criterion = "0.8"
 # reading the parquet corpus (benches/parquet_bench.rs)

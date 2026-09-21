@@ -60,3 +60,15 @@ Linux/WSL-only:
 `cargo test`
 
 `python -m unittest src/test.py`
+
+## Type stubs
+We have a manual `rust_pgn_reader_python_binding.pyi` python type stub.
+To keep it in sync with the Rust bindings, run:
+
+`python tools/check_stubs.py`
+
+This regenerates the stub via `maturin generate-stubs` (PyO3
+`experimental-inspect`, behind the `stubgen` Cargo feature) and diffs the
+symbol surface (module functions, classes, methods/properties, but not
+annotations) against the hand-written file. CI runs the same check in the
+`stubs` job.
