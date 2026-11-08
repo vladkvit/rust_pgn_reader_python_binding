@@ -28,10 +28,17 @@ jobs:
             target: x86_64
           - runner: ubuntu-22.04
             target: x86
+            # Ugly hack: numpy supports free-threaded Python on 32-bit targets
+            # only from 3.15. TODO: Remove this once Maturin can exclude
+            # interpreters from --find-interpreter.
+            before_script_linux: |
+              export PATH="$(printf '%s' "$PATH" | sed 's|:/opt/python/cp314-cp314t/bin||g')"
           - runner: ubuntu-22.04
             target: aarch64
           - runner: ubuntu-22.04
             target: armv7
+            before_script_linux: |
+              export PATH="$(printf '%s' "$PATH" | sed 's|:/opt/python/cp314-cp314t/bin||g')"
           - runner: ubuntu-22.04
             target: s390x
           - runner: ubuntu-22.04
@@ -46,6 +53,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
+          before-script-linux: ${{ matrix.platform.before_script_linux }}
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
       - name: Upload wheels
@@ -63,10 +71,17 @@ jobs:
             target: x86_64
           - runner: ubuntu-22.04
             target: x86
+            # Ugly hack: numpy supports free-threaded Python on 32-bit targets
+            # only from 3.15. TODO: Remove this once Maturin can exclude
+            # interpreters from --find-interpreter.
+            before_script_linux: |
+              export PATH="$(printf '%s' "$PATH" | sed 's|:/opt/python/cp314-cp314t/bin||g')"
           - runner: ubuntu-22.04
             target: aarch64
           - runner: ubuntu-22.04
             target: armv7
+            before_script_linux: |
+              export PATH="$(printf '%s' "$PATH" | sed 's|:/opt/python/cp314-cp314t/bin||g')"
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -77,6 +92,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
+          before-script-linux: ${{ matrix.platform.before_script_linux }}
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
       - name: Upload wheels
@@ -152,7 +168,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: "3.13"
       - name: Generate stubs
         uses: PyO3/maturin-action@v1
         with:
